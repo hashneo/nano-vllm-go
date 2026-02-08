@@ -1,4 +1,4 @@
-.PHONY: all build test clean run example fmt vet
+.PHONY: all build test clean run example fmt vet build-purego build-pytorch run-purego run-pytorch
 
 # Binary name
 BINARY_NAME=nano-vllm-go
@@ -7,18 +7,49 @@ EXAMPLE_BINARY=example
 # Build directory
 BUILD_DIR=bin
 
+# LibTorch path (adjust as needed)
+LIBTORCH_PATH=third_party/libtorch
+
 all: fmt vet test build
 
-# Build the example
+# Build the example (default)
 build:
 	@echo "Building example..."
 	@mkdir -p $(BUILD_DIR)
 	@go build -o $(BUILD_DIR)/$(EXAMPLE_BINARY) ./example
 
+# Build Pure Go version
+build-purego:
+	@echo "Building Pure Go version..."
+	@mkdir -p $(BUILD_DIR)
+	@go build -o $(BUILD_DIR)/simple_example ./purego/example_simple
+
+# Build PyTorch version
+build-pytorch:
+	@echo "Building PyTorch version..."
+	@mkdir -p $(BUILD_DIR)
+	@echo "Note: Requires LibTorch installed"
+	@go build -tags pytorch -o $(BUILD_DIR)/pytorch_example ./pytorch/example || \
+		echo "PyTorch build failed - see pytorch/README.md for setup"
+
+# Build all versions
+build-all: build build-purego
+	@echo "Building all versions (skipping PyTorch - requires setup)"
+
 # Run the example
 run: build
 	@echo "Running example..."
 	@./$(BUILD_DIR)/$(EXAMPLE_BINARY)
+
+# Run Pure Go example
+run-purego: build-purego
+	@echo "Running Pure Go example..."
+	@./$(BUILD_DIR)/simple_example
+
+# Run PyTorch example
+run-pytorch: build-pytorch
+	@echo "Running PyTorch example..."
+	@export LD_LIBRARY_PATH=$(LIBTORCH_PATH)/lib:$$LD_LIBRARY_PATH && ./$(BUILD_DIR)/pytorch_example
 
 # Run tests
 test:

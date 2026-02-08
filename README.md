@@ -33,18 +33,36 @@ go get github.com/your-username/nano-vllm-go
 
 ## Quick Start
 
+### Simple Example (Works Immediately)
+
+```bash
+# Build and run - no setup required!
+go build -o bin/simple_example ./purego/example_simple
+./bin/simple_example
+```
+
+### Go Code Example
+
 ```go
 package main
 
 import (
-    "fmt"
-    "github.com/your-username/nano-vllm-go/nanovllm"
+    "nano-vllm-go/nanovllm"
+    "nano-vllm-go/purego"
 )
 
 func main() {
+    // Create config
+    config := nanovllm.NewConfig(".")
+
+    // Use simple tokenizer (no external files needed)
+    tokenizer := purego.NewSimpleBPETokenizer(2)
+
+    // Use mock model runner (or implement your own)
+    modelRunner := nanovllm.NewMockModelRunner(config)
+
     // Create LLM engine
-    config := nanovllm.NewConfig("/path/to/model")
-    llm := nanovllm.NewLLM(config)
+    llm := nanovllm.NewLLMWithComponents(config, modelRunner, tokenizer)
     defer llm.Close()
 
     // Set up sampling parameters

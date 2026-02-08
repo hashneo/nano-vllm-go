@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/your-username/nano-vllm-go/nanovllm"
+	"nano-vllm-go/nanovllm"
 )
 
 func main() {
