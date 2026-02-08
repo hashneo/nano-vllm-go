@@ -1,62 +1,168 @@
 package purego
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 )
 
-// HFTokenizer implements Tokenizer using Hugging Face tokenizers
-// Note: This requires the daulet/tokenizers library
-// For a working example without external dependencies, use SimpleBPETokenizer
+// HFTokenizer implements a simple HuggingFace tokenizer loader
 type HFTokenizer struct {
-	tokenizerPath string
-	eosID         int
-	initialized   bool
+	vocab       map[string]int
+	invVocab    map[int]string
+	eosID       int
+	bosID       int
+	padID       int
+	vocabSize   int
+	addedTokens map[string]int
 }
 
-// NewHFTokenizer creates a new Hugging Face tokenizer
-func NewHFTokenizer(tokenizerPath string) (*HFTokenizer, error) {
-	// In production, load tokenizer here:
-	// tk, err := tokenizers.FromFile(tokenizerPath)
-	// For now, just validate the path exists
+// TokenizerConfig represents the tokenizer_config.json structure
+type TokenizerConfig struct {
+	EOSToken string `json:"eos_token"`
+	BOSToken string `json:"bos_token"`
+	PadToken string `json:"pad_token"`
+}
 
-	return &HFTokenizer{
-		tokenizerPath: tokenizerPath,
-		eosID:         2,
-		initialized:   true,
-	}, nil
+// TokenizerJSON represents the tokenizer.json structure
+type TokenizerJSON struct {
+	Model struct {
+		Vocab map[string]int `json:"vocab"`
+	} `json:"model"`
+	AddedTokens []struct {
+		ID      int    `json:"id"`
+		Content string `json:"content"`
+	} `json:"added_tokens"`
+}
+
+// NewHFTokenizer creates a new HuggingFace tokenizer from a directory
+func NewHFTokenizer(tokenizerDir string) (*HFTokenizer, error) {
+	tokenizer := &HFTokenizer{
+		vocab:       make(map[string]int),
+		invVocab:    make(map[int]string),
+		addedTokens: make(map[string]int),
+		eosID:       -1,
+		bosID:       -1,
+		padID:       -1,
+	}
+
+	// Load tokenizer.json
+	tokenizerPath := filepath.Join(tokenizerDir, "tokenizer.json")
+	data, err := os.ReadFile(tokenizerPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read tokenizer.json: %w", err)
+	}
+
+	var tokenizerJSON TokenizerJSON
+	if err := json.Unmarshal(data, &tokenizerJSON); err != nil {
+		return nil, fmt.Errorf("failed to parse tokenizer.json: %w", err)
+	}
+
+	// Load vocab
+	for token, id := range tokenizerJSON.Model.Vocab {
+		tokenizer.vocab[token] = id
+		tokenizer.invVocab[id] = token
+	}
+
+	// Load added tokens
+	for _, addedToken := range tokenizerJSON.AddedTokens {
+		tokenizer.addedTokens[addedToken.Content] = addedToken.ID
+		tokenizer.vocab[addedToken.Content] = addedToken.ID
+		tokenizer.invVocab[addedToken.ID] = addedToken.Content
+	}
+
+	tokenizer.vocabSize = len(tokenizer.invVocab)
+
+	// Load tokenizer_config.json for special tokens
+	configPath := filepath.Join(tokenizerDir, "tokenizer_config.json")
+	configData, err := os.ReadFile(configPath)
+	if err == nil {
+		var config TokenizerConfig
+		if err := json.Unmarshal(configData, &config); err == nil {
+			if id, ok := tokenizer.vocab[config.EOSToken]; ok {
+				tokenizer.eosID = id
+			}
+			if id, ok := tokenizer.vocab[config.BOSToken]; ok {
+				tokenizer.bosID = id
+			}
+			if id, ok := tokenizer.vocab[config.PadToken]; ok {
+				tokenizer.padID = id
+			}
+		}
+	}
+
+	// Load model_info.json if available (from our export script)
+	infoPath := filepath.Join(tokenizerDir, "model_info.json")
+	if infoData, err := os.ReadFile(infoPath); err == nil {
+		var info struct {
+			EOSTokenID int `json:"eos_token_id"`
+			BOSTokenID int `json:"bos_token_id"`
+			PadTokenID int `json:"pad_token_id"`
+			VocabSize  int `json:"vocab_size"`
+		}
+		if err := json.Unmarshal(infoData, &info); err == nil {
+			if info.EOSTokenID > 0 {
+				tokenizer.eosID = info.EOSTokenID
+			}
+			if info.BOSTokenID > 0 {
+				tokenizer.bosID = info.BOSTokenID
+			}
+			if info.PadTokenID > 0 {
+				tokenizer.padID = info.PadTokenID
+			}
+			if info.VocabSize > 0 {
+				tokenizer.vocabSize = info.VocabSize
+			}
+		}
+	}
+
+	fmt.Printf("✓ Loaded HF tokenizer (vocab: %d, EOS: %d)\n", tokenizer.vocabSize, tokenizer.eosID)
+	return tokenizer, nil
 }
 
 // Encode converts text to token IDs
+// Note: This is a simplified implementation
 func (t *HFTokenizer) Encode(text string) ([]int, error) {
-	if !t.initialized {
-		return nil, fmt.Errorf("tokenizer not initialized")
+	// Very simple word-level tokenization
+	// For production, use a proper BPE/WordPiece implementation
+	words := strings.Fields(text)
+	tokens := make([]int, 0, len(words))
+
+	for _, word := range words {
+		// Clean word
+		word = strings.ToLower(word)
+		word = strings.Trim(word, ".,!?;:")
+
+		// Look up in vocab
+		if id, ok := t.vocab[word]; ok {
+			tokens = append(tokens, id)
+		} else if id, ok := t.addedTokens[word]; ok {
+			tokens = append(tokens, id)
+		} else {
+			// Use a fallback token (first token or 0)
+			tokens = append(tokens, 0)
+		}
 	}
 
-	// In production: use actual tokenizer
-	// encoded := t.tokenizer.Encode(text, false)
-	// For now, use simple character-based encoding
-	tokens := make([]int, len(text))
-	for i, ch := range text {
-		tokens[i] = int(ch) % 1000
-	}
 	return tokens, nil
 }
 
 // Decode converts token IDs to text
 func (t *HFTokenizer) Decode(tokenIDs []int) (string, error) {
-	if !t.initialized {
-		return "", fmt.Errorf("tokenizer not initialized")
-	}
+	words := make([]string, 0, len(tokenIDs))
 
-	// In production: use actual tokenizer
-	// For now, use simple decoding
-	result := ""
 	for _, id := range tokenIDs {
-		if id != t.eosID {
-			result += string(rune(id + 32))
+		if id == t.eosID || id == t.padID {
+			continue
+		}
+		if token, ok := t.invVocab[id]; ok {
+			words = append(words, token)
 		}
 	}
-	return result, nil
+
+	return strings.Join(words, " "), nil
 }
 
 // EOSTokenID returns the EOS token ID
@@ -64,15 +170,14 @@ func (t *HFTokenizer) EOSTokenID() int {
 	return t.eosID
 }
 
-// SetEOSTokenID sets the EOS token ID
-func (t *HFTokenizer) SetEOSTokenID(id int) {
-	t.eosID = id
+// BOSTokenID returns the BOS token ID
+func (t *HFTokenizer) BOSTokenID() int {
+	return t.bosID
 }
 
-// Close cleans up resources
-func (t *HFTokenizer) Close() error {
-	t.initialized = false
-	return nil
+// VocabSize returns the vocabulary size
+func (t *HFTokenizer) VocabSize() int {
+	return t.vocabSize
 }
 
 // SimpleBPETokenizer is a simplified BPE tokenizer for demonstration
