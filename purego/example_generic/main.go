@@ -60,10 +60,13 @@ func main() {
 	fmt.Println()
 
 	// Create engine config
+	// For long-context models like Granite (32K), we limit the actual batch size
+	// but set max_model_len to match the model's capability
 	config := nanovllm.NewConfig(
 		".",
 		nanovllm.WithMaxNumSeqs(16),
-		nanovllm.WithMaxNumBatchedTokens(2048),
+		nanovllm.WithMaxModelLen(8192),           // Support up to 8K tokens per sequence
+		nanovllm.WithMaxNumBatchedTokens(8192),   // Must be >= max_model_len
 	)
 
 	// Load model (auto-detects architecture!)

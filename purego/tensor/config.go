@@ -265,16 +265,17 @@ func NewGraniteConfig(size string) *ModelConfig {
 		config.Mamba2NGroups = 8
 		config.Mamba2DtRank = 0 // Auto: ceil(768/16) = 48
 
-		// Hybrid: 4 attention + 28 Mamba2
+		// Hybrid: 4 attention + 28 Mamba2 (interspersed)
 		config.NumAttentionLayers = 4
 		config.NumMamba2Layers = 28
 		config.HybridLayers = make([]string, 32)
-		// First 4 are attention, rest are Mamba2
-		for i := 0; i < 4; i++ {
-			config.HybridLayers[i] = "attention"
-		}
-		for i := 4; i < 32; i++ {
+		// Attention at layers 10, 13, 17, 27; rest are Mamba2
+		attentionLayers := []int{10, 13, 17, 27}
+		for i := 0; i < 32; i++ {
 			config.HybridLayers[i] = "mamba2"
+		}
+		for _, idx := range attentionLayers {
+			config.HybridLayers[idx] = "attention"
 		}
 
 	case "1b":

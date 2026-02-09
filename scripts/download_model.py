@@ -72,8 +72,21 @@ def download_and_convert(model_name, output_dir, use_fp16=False):
         print("\n6. Converting to safetensors format...")
         tensors = {}
         total_params = 0
+
+        # Check for tied weights using storage pointer
+        tied_params = {}
         for name, param in state_dict.items():
-            tensors[name] = param.cpu().contiguous()
+            # Use data_ptr to detect shared storage (what safetensors checks)
+            param_cpu = param.cpu()
+            storage_ptr = param_cpu.data_ptr()
+
+            if storage_ptr in tied_params:
+                print(f"   Note: {name} shares weights with {tied_params[storage_ptr]} (skipping)")
+                # Skip tied weights - they're duplicates
+                continue
+
+            tied_params[storage_ptr] = name
+            tensors[name] = param_cpu.contiguous()
             total_params += param.numel()
 
         # Save as safetensors
