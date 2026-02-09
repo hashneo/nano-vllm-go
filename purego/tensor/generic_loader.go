@@ -1,0 +1,518 @@
+package tensor
+
+import (
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"unsafe"
+)
+
+// WeightMapping defines how to map safetensors keys to model components
+type WeightMapping struct {
+	// Embedding keys
+	TokenEmbeddingKey string // e.g., "wte.weight", "transformer.word_embeddings.weight"
+	PosEmbeddingKey   string // e.g., "wpe.weight" (empty for RoPE models)
+	LMHeadKey         string // e.g., "lm_head.weight" (empty if tied)
+
+	// Layer key templates (use {layer} as placeholder)
+	LayerPrefix       string // e.g., "h.{layer}", "transformer.h.{layer}"
+	AttentionQKey     string // e.g., ".attn.c_attn.weight", ".self_attention.query_key_value.weight"
+	AttentionKVKey    string // For MQA/GQA with separate KV (empty if combined with Q)
+	AttentionOutKey   string // e.g., ".attn.c_proj.weight"
+	FFNUpKey          string // e.g., ".mlp.c_fc.weight", ".mlp.dense_h_to_4h.weight"
+	FFNDownKey        string // e.g., ".mlp.c_proj.weight", ".mlp.dense_4h_to_h.weight"
+	AttnNormKey       string // e.g., ".ln_1.weight"
+	FFNNormKey        string // e.g., ".ln_2.weight"
+	InputNormKey      string // For parallel blocks, e.g., ".input_layernorm.weight"
+
+	// Final norm keys
+	FinalNormKey string // e.g., "ln_f.weight", "transformer.ln_f.weight"
+
+	// Combined QKV handling
+	QKVCombined bool // Whether Q,K,V are in one weight matrix
+	QKVSplitFn  func(*Tensor, *ModelConfig) (*Tensor, *Tensor, *Tensor)
+}
+
+// GetGPT2Mapping returns weight mapping for GPT-2
+func GetGPT2Mapping() *WeightMapping {
+	return &WeightMapping{
+		TokenEmbeddingKey: "wte.weight",
+		PosEmbeddingKey:   "wpe.weight",
+		LMHeadKey:         "", // Tied with token embedding
+		LayerPrefix:       "h.{layer}",
+		AttentionQKey:     ".attn.c_attn.weight",
+		AttentionOutKey:   ".attn.c_proj.weight",
+		FFNUpKey:          ".mlp.c_fc.weight",
+		FFNDownKey:        ".mlp.c_proj.weight",
+		AttnNormKey:       ".ln_1.weight",
+		FFNNormKey:        ".ln_2.weight",
+		FinalNormKey:      "ln_f.weight",
+		QKVCombined:       true,
+		QKVSplitFn:        splitGPT2QKV,
+	}
+}
+
+// GetFalconMapping returns weight mapping for Falcon
+func GetFalconMapping() *WeightMapping {
+	return &WeightMapping{
+		TokenEmbeddingKey: "transformer.word_embeddings.weight",
+		PosEmbeddingKey:   "", // Uses RoPE
+		LMHeadKey:         "lm_head.weight",
+		LayerPrefix:       "transformer.h.{layer}",
+		AttentionQKey:     ".self_attention.query_key_value.weight",
+		AttentionOutKey:   ".self_attention.dense.weight",
+		FFNUpKey:          ".mlp.dense_h_to_4h.weight",
+		FFNDownKey:        ".mlp.dense_4h_to_h.weight",
+		InputNormKey:      ".input_layernorm.weight", // Parallel block
+		FinalNormKey:      "transformer.ln_f.weight",
+		QKVCombined:       true,
+		QKVSplitFn:        splitFalconQKV,
+	}
+}
+
+// GetLlamaMapping returns weight mapping for Llama
+func GetLlamaMapping() *WeightMapping {
+	return &WeightMapping{
+		TokenEmbeddingKey: "model.embed_tokens.weight",
+		PosEmbeddingKey:   "", // Uses RoPE
+		LMHeadKey:         "lm_head.weight",
+		LayerPrefix:       "model.layers.{layer}",
+		AttentionQKey:     ".self_attn.q_proj.weight",
+		AttentionKVKey:    ".self_attn.k_proj.weight", // Separate K,V for GQA
+		AttentionOutKey:   ".self_attn.o_proj.weight",
+		FFNUpKey:          ".mlp.gate_proj.weight", // SwiGLU gate
+		FFNDownKey:        ".mlp.down_proj.weight",
+		AttnNormKey:       ".input_layernorm.weight",
+		FFNNormKey:        ".post_attention_layernorm.weight",
+		FinalNormKey:      "model.norm.weight",
+		QKVCombined:       false, // Llama has separate Q, K, V
+	}
+}
+
+// LoadModel loads a transformer model from safetensors
+func LoadModel(modelPath string, config *ModelConfig) (*TransformerModel, error) {
+	// Read safetensors file
+	data, err := os.ReadFile(modelPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read model file: %w", err)
+	}
+
+	// Parse header
+	headerSize := binary.LittleEndian.Uint64(data[:8])
+	headerBytes := data[8 : 8+headerSize]
+	tensorData := data[8+headerSize:]
+
+	var metadata map[string]TensorInfo
+	if err := json.Unmarshal(headerBytes, &metadata); err != nil {
+		return nil, fmt.Errorf("failed to parse metadata: %w", err)
+	}
+
+	fmt.Printf("Loading model with %d tensors...\n", len(metadata))
+
+	// Get weight mapping for this architecture
+	var mapping *WeightMapping
+	switch config.Architecture {
+	case ArchGPT2:
+		mapping = GetGPT2Mapping()
+	case ArchFalcon:
+		mapping = GetFalconMapping()
+	case ArchLlama:
+		mapping = GetLlamaMapping()
+	default:
+		return nil, fmt.Errorf("unsupported architecture: %s", config.Architecture)
+	}
+
+	// Create model
+	model := NewTransformerModel(config)
+
+	// Load embeddings
+	if err := loadTensorRequired(tensorData, metadata, mapping.TokenEmbeddingKey, &model.TokenEmbedding); err != nil {
+		return nil, fmt.Errorf("failed to load token embedding: %w", err)
+	}
+
+	if mapping.PosEmbeddingKey != "" {
+		loadTensorOptional(tensorData, metadata, mapping.PosEmbeddingKey, &model.PosEmbedding)
+	}
+
+	// Load transformer blocks
+	for i := 0; i < config.NumLayers; i++ {
+		if err := loadBlock(tensorData, metadata, mapping, model.Blocks[i], i, config); err != nil {
+			return nil, fmt.Errorf("failed to load layer %d: %w", i, err)
+		}
+	}
+
+	// Load final norm
+	if err := loadNorm(tensorData, metadata, mapping.FinalNormKey, model.LNFinal); err != nil {
+		return nil, fmt.Errorf("failed to load final norm: %w", err)
+	}
+
+	// Load LM head
+	if mapping.LMHeadKey != "" && !config.TiedEmbedding {
+		loadTensorOptional(tensorData, metadata, mapping.LMHeadKey, &model.LMHead)
+	}
+
+	// If tied, use transposed token embedding
+	if config.TiedEmbedding {
+		model.LMHead = Transpose(model.TokenEmbedding)
+	}
+
+	fmt.Printf("✓ Model loaded successfully\n")
+	model.PrintInfo()
+
+	return model, nil
+}
+
+// loadBlock loads weights for a single transformer block
+func loadBlock(tensorData []byte, metadata map[string]TensorInfo, mapping *WeightMapping, block *GenericBlock, layer int, config *ModelConfig) error {
+	// Replace {layer} with actual layer number
+	prefix := strings.ReplaceAll(mapping.LayerPrefix, "{layer}", fmt.Sprintf("%d", layer))
+
+	// Load attention weights
+	if err := loadAttention(tensorData, metadata, mapping, block, prefix, config); err != nil {
+		return fmt.Errorf("attention: %w", err)
+	}
+
+	// Load FFN weights
+	if err := loadFFN(tensorData, metadata, mapping, block, prefix); err != nil {
+		return fmt.Errorf("FFN: %w", err)
+	}
+
+	// Load norms
+	if config.BlockStyle == BlockParallel {
+		if err := loadNorm(tensorData, metadata, prefix+mapping.InputNormKey, block.InputLN); err != nil {
+			return fmt.Errorf("input norm: %w", err)
+		}
+	} else {
+		if err := loadNorm(tensorData, metadata, prefix+mapping.AttnNormKey, block.AttnLN); err != nil {
+			return fmt.Errorf("attn norm: %w", err)
+		}
+		if err := loadNorm(tensorData, metadata, prefix+mapping.FFNNormKey, block.FFNLN); err != nil {
+			return fmt.Errorf("FFN norm: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// loadAttention loads attention weights
+func loadAttention(tensorData []byte, metadata map[string]TensorInfo, mapping *WeightMapping, block *GenericBlock, prefix string, config *ModelConfig) error {
+	switch attn := block.Attention.(type) {
+	case *MultiQueryAttention:
+		// MQA: Load combined QKV or separate
+		if mapping.QKVCombined {
+			var qkvWeight *Tensor
+			if err := loadTensorRequired(tensorData, metadata, prefix+mapping.AttentionQKey, &qkvWeight); err != nil {
+				return err
+			}
+			// Split into Q and KV
+			if mapping.QKVSplitFn != nil {
+				Q, K, V := mapping.QKVSplitFn(qkvWeight, config)
+				attn.QWeight = Q
+				attn.KVWeight = combineMQAKV(K, V)
+			}
+		} else {
+			loadTensorRequired(tensorData, metadata, prefix+mapping.AttentionQKey, &attn.QWeight)
+			loadTensorOptional(tensorData, metadata, prefix+mapping.AttentionKVKey, &attn.KVWeight)
+		}
+		loadTensorRequired(tensorData, metadata, prefix+mapping.AttentionOutKey, &attn.OutWeight)
+
+	case *MultiHeadAttention:
+		// MHA: Load combined or separate Q,K,V
+		if mapping.QKVCombined {
+			var qkvWeight *Tensor
+			if err := loadTensorRequired(tensorData, metadata, prefix+mapping.AttentionQKey, &qkvWeight); err != nil {
+				return err
+			}
+			if mapping.QKVSplitFn != nil {
+				Q, K, V := mapping.QKVSplitFn(qkvWeight, config)
+				attn.QWeight = Q
+				attn.KWeight = K
+				attn.VWeight = V
+			}
+		} else {
+			loadTensorRequired(tensorData, metadata, prefix+mapping.AttentionQKey, &attn.QWeight)
+			loadTensorOptional(tensorData, metadata, prefix+".self_attn.k_proj.weight", &attn.KWeight)
+			loadTensorOptional(tensorData, metadata, prefix+".self_attn.v_proj.weight", &attn.VWeight)
+		}
+		loadTensorRequired(tensorData, metadata, prefix+mapping.AttentionOutKey, &attn.OutWeight)
+	}
+
+	return nil
+}
+
+// loadFFN loads FFN weights
+func loadFFN(tensorData []byte, metadata map[string]TensorInfo, mapping *WeightMapping, block *GenericBlock, prefix string) error {
+	loadTensorRequired(tensorData, metadata, prefix+mapping.FFNUpKey, &block.FFN.W1)
+	loadTensorRequired(tensorData, metadata, prefix+mapping.FFNDownKey, &block.FFN.W2)
+
+	// Biases (optional)
+	loadTensorOptional(tensorData, metadata, prefix+mapping.FFNUpKey+".bias", &block.FFN.B1)
+	loadTensorOptional(tensorData, metadata, prefix+mapping.FFNDownKey+".bias", &block.FFN.B2)
+
+	return nil
+}
+
+// loadNorm loads normalization layer weights
+func loadNorm(tensorData []byte, metadata map[string]TensorInfo, key string, norm *LayerNormLayer) error {
+	if err := loadTensorRequired(tensorData, metadata, key, &norm.Weight); err != nil {
+		return err
+	}
+	// Bias is optional (RMSNorm doesn't have bias)
+	loadTensorOptional(tensorData, metadata, key+".bias", &norm.Bias)
+	return nil
+}
+
+// loadTensorRequired loads a tensor and returns error if not found
+func loadTensorRequired(data []byte, metadata map[string]TensorInfo, name string, target **Tensor) error {
+	if err := loadTensorFromData(data, metadata, name, target); err != nil {
+		return fmt.Errorf("required tensor '%s' not found: %w", name, err)
+	}
+	return nil
+}
+
+// loadTensorOptional loads a tensor, ignores if not found
+func loadTensorOptional(data []byte, metadata map[string]TensorInfo, name string, target **Tensor) {
+	loadTensorFromData(data, metadata, name, target)
+}
+
+// loadTensorFromData loads a single tensor from safetensors data
+func loadTensorFromData(data []byte, metadata map[string]TensorInfo, name string, target **Tensor) error {
+	info, ok := metadata[name]
+	if !ok {
+		return fmt.Errorf("tensor not found: %s", name)
+	}
+
+	// Extract tensor data
+	start := info.Offset[0]
+	end := info.Offset[1]
+	tensorBytes := data[start:end]
+
+	// Calculate number of elements
+	numElements := 1
+	for _, dim := range info.Shape {
+		numElements *= dim
+	}
+
+	tensorData := make([]float32, numElements)
+
+	// Convert based on dtype
+	switch info.Dtype {
+	case "F32":
+		for i := 0; i < numElements; i++ {
+			bits := binary.LittleEndian.Uint32(tensorBytes[i*4 : (i+1)*4])
+			tensorData[i] = float32FromBits(bits)
+		}
+	case "F16":
+		for i := 0; i < numElements; i++ {
+			bits := binary.LittleEndian.Uint16(tensorBytes[i*2 : (i+1)*2])
+			tensorData[i] = float32FromFloat16(bits)
+		}
+	case "BF16":
+		for i := 0; i < numElements; i++ {
+			bits := binary.LittleEndian.Uint16(tensorBytes[i*2 : (i+1)*2])
+			tensorData[i] = float32FromBFloat16(bits)
+		}
+	default:
+		return fmt.Errorf("unsupported dtype: %s", info.Dtype)
+	}
+
+	*target = &Tensor{
+		Data:  tensorData,
+		Shape: info.Shape,
+	}
+
+	return nil
+}
+
+// splitGPT2QKV splits GPT-2's combined QKV weight
+func splitGPT2QKV(qkvWeight *Tensor, config *ModelConfig) (*Tensor, *Tensor, *Tensor) {
+	// GPT-2 format: [hidden, 3*hidden]
+	hidden := config.Hidden
+
+	Q := &Tensor{
+		Data:  qkvWeight.Data[0 : hidden*hidden],
+		Shape: []int{hidden, hidden},
+	}
+	K := &Tensor{
+		Data:  qkvWeight.Data[hidden*hidden : 2*hidden*hidden],
+		Shape: []int{hidden, hidden},
+	}
+	V := &Tensor{
+		Data:  qkvWeight.Data[2*hidden*hidden : 3*hidden*hidden],
+		Shape: []int{hidden, hidden},
+	}
+
+	return Q, K, V
+}
+
+// splitFalconQKV splits Falcon's combined QKV weight for MQA
+func splitFalconQKV(qkvWeight *Tensor, config *ModelConfig) (*Tensor, *Tensor, *Tensor) {
+	// Falcon format: [hidden, hidden + 2*head_dim]
+	// Q is full size, K,V are single head
+	hidden := config.Hidden
+	headDim := config.HeadDim
+
+	Q := &Tensor{
+		Data:  qkvWeight.Data[0 : hidden*hidden],
+		Shape: []int{hidden, hidden},
+	}
+	K := &Tensor{
+		Data:  qkvWeight.Data[hidden*hidden : hidden*(hidden+headDim)],
+		Shape: []int{hidden, headDim},
+	}
+	V := &Tensor{
+		Data:  qkvWeight.Data[hidden*(hidden+headDim) : hidden*(hidden+2*headDim)],
+		Shape: []int{hidden, headDim},
+	}
+
+	return Q, K, V
+}
+
+// combineMQAKV combines separate K and V into MQA KV weight
+func combineMQAKV(K, V *Tensor) *Tensor {
+	// Combine K,V into single tensor [hidden, head_dim*2]
+	hidden := K.Shape[0]
+	headDim := K.Shape[1]
+
+	combined := NewTensor(hidden, headDim*2)
+	for i := 0; i < hidden; i++ {
+		for j := 0; j < headDim; j++ {
+			combined.Data[i*headDim*2+j] = K.Data[i*headDim+j]
+			combined.Data[i*headDim*2+headDim+j] = V.Data[i*headDim+j]
+		}
+	}
+
+	return combined
+}
+
+// Helper functions for type conversion
+
+func float32FromBits(bits uint32) float32 {
+	ptr := &bits
+	return *(*float32)(unsafe.Pointer(ptr))
+}
+
+func float32FromFloat16(bits uint16) float32 {
+	sign := uint32((bits >> 15) & 1)
+	exp := uint32((bits >> 10) & 0x1F)
+	frac := uint32(bits & 0x3FF)
+
+	if exp == 0 {
+		if frac == 0 {
+			return float32FromBits(sign << 31)
+		}
+		// Subnormal
+		exp = 127 - 14
+		for (frac & 0x400) == 0 {
+			frac <<= 1
+			exp--
+		}
+		frac &= 0x3FF
+	} else if exp == 0x1F {
+		// Inf or NaN
+		exp = 0xFF
+	} else {
+		// Normal
+		exp += 127 - 15
+	}
+
+	result := (sign << 31) | (exp << 23) | (frac << 13)
+	return float32FromBits(result)
+}
+
+func float32FromBFloat16(bits uint16) float32 {
+	// BF16 is just truncated FP32 (sign + 8-bit exp + 7-bit mantissa)
+	return float32FromBits(uint32(bits) << 16)
+}
+
+// LoadModelConfig loads model config from JSON file
+func LoadModelConfig(configPath string) (*ModelConfig, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config: %w", err)
+	}
+
+	// Try to infer architecture from JSON
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Create config based on architecture field or infer from structure
+	arch, _ := raw["architecture"].(string)
+
+	var config *ModelConfig
+	switch arch {
+	case "gpt2":
+		config = NewGPT2Config()
+	case "falcon":
+		config = NewFalconConfig("7b")
+	case "llama":
+		config = NewLlamaConfig("7b")
+	default:
+		// Try to infer from fields
+		config = inferConfigFromJSON(raw)
+	}
+
+	// Override with JSON values
+	if v, ok := raw["vocab_size"].(float64); ok {
+		config.VocabSize = int(v)
+	}
+	if v, ok := raw["hidden_size"].(float64); ok {
+		config.Hidden = int(v)
+	}
+	if v, ok := raw["num_layers"].(float64); ok {
+		config.NumLayers = int(v)
+	}
+	if v, ok := raw["num_heads"].(float64); ok {
+		config.NumHeads = int(v)
+	}
+	if v, ok := raw["num_kv_heads"].(float64); ok {
+		config.NumKVHeads = int(v)
+	}
+	if v, ok := raw["eos_token_id"].(float64); ok {
+		config.EOSTokenID = int(v)
+	}
+
+	return config, nil
+}
+
+// inferConfigFromJSON tries to infer architecture from JSON structure
+func inferConfigFromJSON(raw map[string]interface{}) *ModelConfig {
+	// Check for model_type field
+	if modelType, ok := raw["model_type"].(string); ok {
+		switch modelType {
+		case "gpt2":
+			return NewGPT2Config()
+		case "falcon", "RefinedWeb", "RefinedWebModel":
+			return NewFalconConfig("7b")
+		case "llama", "LlamaForCausalLM":
+			return NewLlamaConfig("7b")
+		}
+	}
+
+	// Default to GPT-2 style
+	return NewGPT2Config()
+}
+
+// LoadModelFromDirectory loads model from a directory with config.json and model.safetensors
+func LoadModelFromDirectory(dir string) (*TransformerModel, error) {
+	// Try to load config
+	configPath := filepath.Join(dir, "config.json")
+	config, err := LoadModelConfig(configPath)
+	if err != nil {
+		// Try model_info.json (our custom format)
+		configPath = filepath.Join(dir, "model_info.json")
+		config, err = LoadModelConfig(configPath)
+		if err != nil {
+			return nil, fmt.Errorf("no valid config found: %w", err)
+		}
+	}
+
+	// Load model weights
+	modelPath := filepath.Join(dir, "model.safetensors")
+	return LoadModel(modelPath, config)
+}
