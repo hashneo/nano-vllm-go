@@ -14,8 +14,8 @@ func main() {
 		modelDir = "./models/granite-350m"
 	}
 
-	fmt.Println("Quick Granite Test - Generating 1 token")
-	fmt.Println("========================================")
+	fmt.Println("Quick Granite Test - 20 tokens max")
+	fmt.Println("====================================")
 	fmt.Println()
 
 	// Create config
@@ -30,16 +30,20 @@ func main() {
 	llm := nanovllm.NewLLM(config)
 	defer llm.Close()
 
-	// Set up sampling parameters - 10 tokens
+	// Set up sampling parameters - 20 tokens (practical for demos)
 	samplingParams := nanovllm.NewSamplingParams(
-		nanovllm.WithTemperature(0.3),
-		nanovllm.WithMaxTokens(10),  // Generate 10 tokens
+		nanovllm.WithTemperature(0.7),
+		nanovllm.WithMaxTokens(20), // Generate 20 tokens
 	)
 
-	// Simple prompt
-	prompts := []string{"Q: What is 2+2?\nA:"}
+	// Get prompt from command line or use default
+	prompt := "Q: What is 2+2?\nA:"
+	if len(os.Args) > 1 {
+		prompt = os.Args[1]
+	}
+	prompts := []string{prompt}
 
-	fmt.Printf("Generating 1 token for prompt: %s\n", prompts[0])
+	fmt.Printf("Generating response for: %s\n", prompts[0])
 	fmt.Println()
 
 	// Generate
