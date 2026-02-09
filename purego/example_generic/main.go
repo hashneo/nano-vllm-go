@@ -19,6 +19,8 @@ func main() {
 	if modelDir == "" {
 		// Check for different model directories
 		possibleDirs := []string{
+			"./models/granite-350m",
+			"./models/granite-1b",
 			"./models/falcon-7b",
 			"./models/gpt2",
 			"./models/llama-7b",
@@ -35,14 +37,20 @@ func main() {
 		if modelDir == "" {
 			fmt.Println("No model found. Set MODEL_DIR or download a model:")
 			fmt.Println()
+			fmt.Println("Granite 4 Nano 350M (small, hybrid architecture with Mamba2):")
+			fmt.Println("  ./scripts/download_model.py --model ibm-granite/granite-4.0-h-350m --output ./models/granite-350m")
+			fmt.Println()
+			fmt.Println("Granite 4 Nano 1B (medium, hybrid architecture with Mamba2):")
+			fmt.Println("  ./scripts/download_model.py --model ibm-granite/granite-4.0-h-1b --output ./models/granite-1b --fp16")
+			fmt.Println()
 			fmt.Println("GPT-2 (124M, fast to download):")
-			fmt.Println("  python3 scripts/download_model.py --model gpt2 --output ./models/gpt2")
+			fmt.Println("  ./scripts/download_model.py --model gpt2 --output ./models/gpt2")
 			fmt.Println()
 			fmt.Println("Falcon 7B (7B, production quality):")
-			fmt.Println("  python3 scripts/download_model.py --model tiiuae/falcon-7b --output ./models/falcon-7b")
+			fmt.Println("  ./scripts/download_model.py --model tiiuae/falcon-7b --output ./models/falcon-7b --fp16")
 			fmt.Println()
 			fmt.Println("Llama 2 7B (7B, state of the art):")
-			fmt.Println("  python3 scripts/download_model.py --model meta-llama/Llama-2-7b-hf --output ./models/llama-7b")
+			fmt.Println("  ./scripts/download_model.py --model meta-llama/Llama-2-7b-hf --output ./models/llama-7b --fp16")
 			fmt.Println()
 			os.Exit(1)
 		}

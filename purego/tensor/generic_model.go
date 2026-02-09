@@ -43,7 +43,12 @@ func NewTransformerModel(config *ModelConfig) *TransformerModel {
 
 	// Create transformer blocks
 	for i := 0; i < config.NumLayers; i++ {
-		model.Blocks[i] = NewGenericBlock(config)
+		// For hybrid architectures (Granite), check layer type
+		if len(config.HybridLayers) > 0 && i < len(config.HybridLayers) {
+			model.Blocks[i] = NewGenericBlockWithType(config, config.HybridLayers[i])
+		} else {
+			model.Blocks[i] = NewGenericBlock(config)
+		}
 	}
 
 	// Create final norm
@@ -54,44 +59,55 @@ func NewTransformerModel(config *ModelConfig) *TransformerModel {
 
 // NewGenericBlock creates a block that adapts to the config
 func NewGenericBlock(config *ModelConfig) *GenericBlock {
+	return NewGenericBlockWithType(config, "attention")
+}
+
+// NewGenericBlockWithType creates a block of specified type (attention or mamba2)
+func NewGenericBlockWithType(config *ModelConfig, layerType string) *GenericBlock {
 	block := &GenericBlock{
 		Config: config,
 	}
 
-	// Create attention based on type
-	switch config.AttentionType {
-	case AttentionMQA:
-		block.Attention = NewMultiQueryAttention(config.NumHeads, config.HeadDim, config.MaxSeqLen)
-	case AttentionMHA:
-		block.Attention = &MultiHeadAttention{
-			NumHeads: config.NumHeads,
-			HeadDim:  config.HeadDim,
-			Hidden:   config.Hidden,
-		}
-	case AttentionGQA:
-		// GQA implementation (similar to MQA but with multiple KV heads)
-		// For now, fall back to MHA
-		block.Attention = &MultiHeadAttention{
-			NumHeads: config.NumHeads,
-			HeadDim:  config.HeadDim,
-			Hidden:   config.Hidden,
-		}
-	}
-
-	// Create FFN
-	block.FFN = &FeedForward{
-		Hidden: config.Hidden,
-		FFNDim: config.FFNDim,
-	}
-
-	// Create norms based on block style
-	if config.BlockStyle == BlockParallel {
-		// Parallel: single input norm
-		block.InputLN = &LayerNormLayer{Eps: config.NormEps}
+	// Create layer based on type
+	if layerType == "mamba2" {
+		// Create Mamba2 layer
+		block.Attention = NewMamba2Layer(config)
 	} else {
-		// Sequential: separate norms for attention and FFN
-		block.AttnLN = &LayerNormLayer{Eps: config.NormEps}
-		block.FFNLN = &LayerNormLayer{Eps: config.NormEps}
+		// Create attention based on type
+		switch config.AttentionType {
+		case AttentionMQA:
+			block.Attention = NewMultiQueryAttention(config.NumHeads, config.HeadDim, config.MaxSeqLen)
+		case AttentionMHA:
+			block.Attention = &MultiHeadAttention{
+				NumHeads: config.NumHeads,
+				HeadDim:  config.HeadDim,
+				Hidden:   config.Hidden,
+			}
+		case AttentionGQA:
+			// GQA implementation (similar to MQA but with multiple KV heads)
+			// For now, fall back to MHA
+			block.Attention = &MultiHeadAttention{
+				NumHeads: config.NumHeads,
+				HeadDim:  config.HeadDim,
+				Hidden:   config.Hidden,
+			}
+		}
+
+		// Create FFN (only for attention layers, Mamba2 has its own)
+		block.FFN = &FeedForward{
+			Hidden: config.Hidden,
+			FFNDim: config.FFNDim,
+		}
+
+		// Create norms based on block style
+		if config.BlockStyle == BlockParallel {
+			// Parallel: single input norm
+			block.InputLN = &LayerNormLayer{Eps: config.NormEps}
+		} else {
+			// Sequential: separate norms for attention and FFN
+			block.AttnLN = &LayerNormLayer{Eps: config.NormEps}
+			block.FFNLN = &LayerNormLayer{Eps: config.NormEps}
+		}
 	}
 
 	return block
@@ -99,10 +115,26 @@ func NewGenericBlock(config *ModelConfig) *GenericBlock {
 
 // Forward applies the transformer block based on block style
 func (block *GenericBlock) Forward(x *Tensor) *Tensor {
+	// Check if this is a Mamba2 layer (no FFN)
+	if block.FFN == nil {
+		// Mamba2 layer - has integrated forward pass with residual
+		return block.forwardMamba2(x)
+	}
+
 	if block.Config.BlockStyle == BlockParallel {
 		return block.forwardParallel(x)
 	}
 	return block.forwardSequential(x)
+}
+
+// forwardMamba2: Mamba2 layer with residual connection
+func (block *GenericBlock) forwardMamba2(x *Tensor) *Tensor {
+	// Mamba2 has integrated norm, gating, and projection
+	// Just add residual connection
+	residual := x
+	x = block.Attention.Forward(x)
+	x = Add(x, residual)
+	return x
 }
 
 // forwardSequential: attention then FFN (GPT-2, Llama style)

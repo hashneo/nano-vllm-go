@@ -8,6 +8,7 @@ const (
 	ArchFalcon  ModelArchitecture = "falcon"   // Falcon: MQA, RoPE, parallel blocks
 	ArchLlama   ModelArchitecture = "llama"    // Llama: GQA, RoPE, RMSNorm, SwiGLU
 	ArchMistral ModelArchitecture = "mistral"  // Mistral: GQA, RoPE, RMSNorm, SwiGLU, sliding window
+	ArchGranite ModelArchitecture = "granite"  // Granite: Hybrid attention + Mamba2 layers
 )
 
 // AttentionType defines the attention mechanism
@@ -34,6 +35,7 @@ const (
 	PositionLearned PositionType = "learned" // Learned embeddings (GPT-2)
 	PositionRoPE    PositionType = "rope"    // Rotary (Falcon, Llama, Mistral)
 	PositionALiBi   PositionType = "alibi"   // Attention with Linear Biases
+	PositionNoPE    PositionType = "nope"    // No positional encoding (Granite/Mamba2)
 )
 
 // ActivationType defines activation function
@@ -89,6 +91,22 @@ type ModelConfig struct {
 
 	// Other
 	TiedEmbedding bool // Whether LM head shares weights with token embedding
+
+	// Mamba2 parameters (for hybrid architectures like Granite)
+	Mamba2Expand      int     // Expansion factor (usually 2)
+	Mamba2StateSize   int     // State dimension (usually 128)
+	Mamba2NumHeads    int     // Number of SSM heads (usually 48)
+	Mamba2NGroups     int     // Number of groups (usually 8)
+	Mamba2ConvKernel  int     // Causal conv kernel size (usually 4)
+	Mamba2DtRank      int     // Delta rank (auto: ceil(hidden/16))
+	Mamba2ChunkSize   int     // Chunk size for scanning (usually 256)
+	Mamba2TimeStepMin float32 // Min time step (usually 0.001)
+	Mamba2TimeStepMax float32 // Max time step (usually 0.1)
+
+	// Hybrid architecture (for Granite)
+	HybridLayers      []string // Layer types: "attention" or "mamba2"
+	NumAttentionLayers int     // Number of attention layers
+	NumMamba2Layers    int     // Number of Mamba2 layers
 }
 
 // NewGPT2Config creates config for GPT-2 models
@@ -202,6 +220,93 @@ func NewLlamaConfig(size string) *ModelConfig {
 		config.MaxSeqLen = 4096
 	default:
 		return NewLlamaConfig("7b")
+	}
+
+	return config
+}
+
+// NewGraniteConfig creates config for IBM Granite 4 models
+// Granite uses hybrid architecture with 4 attention layers + many Mamba2 layers
+func NewGraniteConfig(size string) *ModelConfig {
+	config := &ModelConfig{
+		Architecture:   ArchGranite,
+		AttentionType:  AttentionGQA,
+		NormType:       NormRMS,
+		PositionType:   PositionNoPE, // Granite uses no positional encoding
+		ActivationType: ActivationSwiGLU,
+		BlockStyle:     BlockSequential,
+		RoPEBase:       10000.0,
+		NormEps:        1e-5,
+		TiedEmbedding:  true,
+
+		// Mamba2 parameters
+		Mamba2Expand:      2,
+		Mamba2StateSize:   128,
+		Mamba2ConvKernel:  4,
+		Mamba2ChunkSize:   256,
+		Mamba2TimeStepMin: 0.001,
+		Mamba2TimeStepMax: 0.1,
+	}
+
+	switch size {
+	case "350m":
+		config.ModelName = "granite-4.0-h-350m"
+		config.VocabSize = 49152
+		config.Hidden = 768
+		config.NumLayers = 32
+		config.NumHeads = 12
+		config.NumKVHeads = 4 // GQA: 4 KV heads
+		config.HeadDim = 64
+		config.FFNDim = 2048
+		config.MaxSeqLen = 32768
+
+		// Mamba2 specific
+		config.Mamba2NumHeads = 48
+		config.Mamba2NGroups = 8
+		config.Mamba2DtRank = 0 // Auto: ceil(768/16) = 48
+
+		// Hybrid: 4 attention + 28 Mamba2
+		config.NumAttentionLayers = 4
+		config.NumMamba2Layers = 28
+		config.HybridLayers = make([]string, 32)
+		// First 4 are attention, rest are Mamba2
+		for i := 0; i < 4; i++ {
+			config.HybridLayers[i] = "attention"
+		}
+		for i := 4; i < 32; i++ {
+			config.HybridLayers[i] = "mamba2"
+		}
+
+	case "1b":
+		config.ModelName = "granite-4.0-h-1b"
+		config.VocabSize = 49152
+		config.Hidden = 1536
+		config.NumLayers = 40
+		config.NumHeads = 12
+		config.NumKVHeads = 4 // GQA: 4 KV heads
+		config.HeadDim = 128
+		config.FFNDim = 4096
+		config.MaxSeqLen = 128000
+
+		// Mamba2 specific
+		config.Mamba2NumHeads = 48
+		config.Mamba2NGroups = 8
+		config.Mamba2DtRank = 0 // Auto: ceil(1536/16) = 96
+
+		// Hybrid: 4 attention + 36 Mamba2
+		config.NumAttentionLayers = 4
+		config.NumMamba2Layers = 36
+		config.HybridLayers = make([]string, 40)
+		// First 4 are attention, rest are Mamba2
+		for i := 0; i < 4; i++ {
+			config.HybridLayers[i] = "attention"
+		}
+		for i := 4; i < 40; i++ {
+			config.HybridLayers[i] = "mamba2"
+		}
+
+	default:
+		return NewGraniteConfig("350m")
 	}
 
 	return config
