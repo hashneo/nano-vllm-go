@@ -4,11 +4,11 @@ package tensor
 type ModelArchitecture string
 
 const (
-	ArchGPT2    ModelArchitecture = "gpt2"     // GPT-2: MHA, learned positions, sequential blocks
-	ArchFalcon  ModelArchitecture = "falcon"   // Falcon: MQA, RoPE, parallel blocks
-	ArchLlama   ModelArchitecture = "llama"    // Llama: GQA, RoPE, RMSNorm, SwiGLU
-	ArchMistral ModelArchitecture = "mistral"  // Mistral: GQA, RoPE, RMSNorm, SwiGLU, sliding window
-	ArchGranite ModelArchitecture = "granite"  // Granite: Hybrid attention + Mamba2 layers
+	ArchGPT2    ModelArchitecture = "gpt2"    // GPT-2: MHA, learned positions, sequential blocks
+	ArchFalcon  ModelArchitecture = "falcon"  // Falcon: MQA, RoPE, parallel blocks
+	ArchLlama   ModelArchitecture = "llama"   // Llama: GQA, RoPE, RMSNorm, SwiGLU
+	ArchMistral ModelArchitecture = "mistral" // Mistral: GQA, RoPE, RMSNorm, SwiGLU, sliding window
+	ArchGranite ModelArchitecture = "granite" // Granite: Hybrid attention + Mamba2 layers
 )
 
 // AttentionType defines the attention mechanism
@@ -64,10 +64,10 @@ type ModelConfig struct {
 	VocabSize  int
 	Hidden     int
 	NumLayers  int
-	NumHeads   int   // Number of query heads
-	NumKVHeads int   // Number of KV heads (1 for MQA, same as NumHeads for MHA)
-	HeadDim    int   // Usually hidden / num_heads
-	FFNDim     int   // Usually 4 * hidden
+	NumHeads   int // Number of query heads
+	NumKVHeads int // Number of KV heads (1 for MQA, same as NumHeads for MHA)
+	HeadDim    int // Usually hidden / num_heads
+	FFNDim     int // Usually 4 * hidden
 	MaxSeqLen  int
 
 	// Architecture choices
@@ -83,11 +83,11 @@ type ModelConfig struct {
 	PadTokenID int
 
 	// RoPE parameters
-	RoPEBase      float64 // Usually 10000.0
-	RoPEScaling   float64 // For extended context (usually 1.0)
+	RoPEBase    float64 // Usually 10000.0
+	RoPEScaling float64 // For extended context (usually 1.0)
 
 	// Normalization parameters
-	NormEps       float32 // Usually 1e-5 or 1e-6
+	NormEps float32 // Usually 1e-5 or 1e-6
 
 	// Other
 	TiedEmbedding bool // Whether LM head shares weights with token embedding
@@ -105,9 +105,15 @@ type ModelConfig struct {
 	Mamba2TimeStepMax float32 // Max time step (usually 0.1)
 
 	// Hybrid architecture (for Granite)
-	HybridLayers      []string // Layer types: "attention" or "mamba2"
-	NumAttentionLayers int     // Number of attention layers
-	NumMamba2Layers    int     // Number of Mamba2 layers
+	HybridLayers       []string // Layer types: "attention" or "mamba2"
+	NumAttentionLayers int      // Number of attention layers
+	NumMamba2Layers    int      // Number of Mamba2 layers
+
+	// muP (Maximal Update Parametrization) scaling (for Granite)
+	EmbeddingMultiplier float32 // Scale embeddings (usually 12 for Granite)
+	AttentionMultiplier float32 // Scale attention scores (usually 0.015625)
+	ResidualMultiplier  float32 // Scale residual connections (usually 0.246)
+	LogitsScaling       float32 // Scale final logits (usually 3)
 }
 
 // NewGPT2Config creates config for GPT-2 models
@@ -263,7 +269,7 @@ func NewGraniteConfig(size string) *ModelConfig {
 
 		// Mamba2 specific
 		config.Mamba2NumHeads = 48
-		config.Mamba2HeadDim = 32  // From mamba_d_head in config
+		config.Mamba2HeadDim = 32 // From mamba_d_head in config
 		config.Mamba2NGroups = 8
 		config.Mamba2DtRank = 0 // Auto: ceil(768/16) = 48
 
@@ -365,14 +371,14 @@ func (c *ModelConfig) EstimateParameters() int64 {
 		paramsPerLayer += 4 * int64(c.Hidden*c.Hidden)
 	case AttentionMQA:
 		// Q is full size, K,V are small
-		paramsPerLayer += int64(c.Hidden * c.Hidden)                    // Q
-		paramsPerLayer += 2 * int64(c.Hidden*c.HeadDim)                 // K, V
-		paramsPerLayer += int64(c.Hidden * c.Hidden)                    // Out
+		paramsPerLayer += int64(c.Hidden * c.Hidden)    // Q
+		paramsPerLayer += 2 * int64(c.Hidden*c.HeadDim) // K, V
+		paramsPerLayer += int64(c.Hidden * c.Hidden)    // Out
 	case AttentionGQA:
 		// Q is full, K,V are medium
-		paramsPerLayer += int64(c.Hidden * c.Hidden)                    // Q
-		paramsPerLayer += 2 * int64(c.Hidden*c.NumKVHeads*c.HeadDim)   // K, V
-		paramsPerLayer += int64(c.Hidden * c.Hidden)                    // Out
+		paramsPerLayer += int64(c.Hidden * c.Hidden)                 // Q
+		paramsPerLayer += 2 * int64(c.Hidden*c.NumKVHeads*c.HeadDim) // K, V
+		paramsPerLayer += int64(c.Hidden * c.Hidden)                 // Out
 	}
 
 	// FFN weights

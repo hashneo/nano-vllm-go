@@ -18,16 +18,16 @@ type WeightMapping struct {
 	LMHeadKey         string // e.g., "lm_head.weight" (empty if tied)
 
 	// Layer key templates (use {layer} as placeholder)
-	LayerPrefix       string // e.g., "h.{layer}", "transformer.h.{layer}"
-	AttentionQKey     string // e.g., ".attn.c_attn.weight", ".self_attention.query_key_value.weight"
-	AttentionKVKey    string // For MQA/GQA with separate KV (empty if combined with Q)
-	AttentionOutKey   string // e.g., ".attn.c_proj.weight"
-	FFNUpKey          string // e.g., ".mlp.c_fc.weight", ".mlp.dense_h_to_4h.weight"
-	FFNDownKey        string // e.g., ".mlp.c_proj.weight", ".mlp.dense_4h_to_h.weight"
-	AttnNormKey       string // e.g., ".ln_1.weight"
-	FFNNormKey        string // e.g., ".ln_2.weight"
-	InputNormKey      string // For parallel blocks, e.g., ".input_layernorm.weight"
-	PostAttnNormKey   string // Post-attention norm (Granite)
+	LayerPrefix     string // e.g., "h.{layer}", "transformer.h.{layer}"
+	AttentionQKey   string // e.g., ".attn.c_attn.weight", ".self_attention.query_key_value.weight"
+	AttentionKVKey  string // For MQA/GQA with separate KV (empty if combined with Q)
+	AttentionOutKey string // e.g., ".attn.c_proj.weight"
+	FFNUpKey        string // e.g., ".mlp.c_fc.weight", ".mlp.dense_h_to_4h.weight"
+	FFNDownKey      string // e.g., ".mlp.c_proj.weight", ".mlp.dense_4h_to_h.weight"
+	AttnNormKey     string // e.g., ".ln_1.weight"
+	FFNNormKey      string // e.g., ".ln_2.weight"
+	InputNormKey    string // For parallel blocks, e.g., ".input_layernorm.weight"
+	PostAttnNormKey string // Post-attention norm (Granite)
 
 	// Final norm keys
 	FinalNormKey string // e.g., "ln_f.weight", "transformer.ln_f.weight"
@@ -680,6 +680,9 @@ func LoadModelConfig(configPath string) (*ModelConfig, error) {
 	if v, ok := raw["intermediate_size"].(float64); ok {
 		config.FFNDim = int(v)
 	}
+	if v, ok := raw["tie_word_embeddings"].(bool); ok {
+		config.TiedEmbedding = v
+	}
 
 	// Granite-specific fields
 	if layerTypes, ok := raw["layer_types"].([]interface{}); ok {
@@ -710,6 +713,20 @@ func LoadModelConfig(configPath string) (*ModelConfig, error) {
 	}
 	if v, ok := raw["mamba_chunk_size"].(float64); ok {
 		config.Mamba2ChunkSize = int(v)
+	}
+
+	// muP scaling parameters (for Granite)
+	if v, ok := raw["embedding_multiplier"].(float64); ok {
+		config.EmbeddingMultiplier = float32(v)
+	}
+	if v, ok := raw["attention_multiplier"].(float64); ok {
+		config.AttentionMultiplier = float32(v)
+	}
+	if v, ok := raw["residual_multiplier"].(float64); ok {
+		config.ResidualMultiplier = float32(v)
+	}
+	if v, ok := raw["logits_scaling"].(float64); ok {
+		config.LogitsScaling = float32(v)
 	}
 
 	return config, nil

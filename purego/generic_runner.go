@@ -109,6 +109,15 @@ func (m *GenericModelRunner) Run(seqs []*nanovllm.Sequence, isPrefill bool) ([]i
 
 // sampleToken samples a token from logits using temperature sampling
 func (m *GenericModelRunner) sampleToken(logits []float32, temperature float64) int {
+	// DEBUG: Print first 10 logits to diagnose issue
+	if false {  // Set to true to enable debug
+		fmt.Printf("DEBUG: First 10 logits: ")
+		for i := 0; i < 10 && i < len(logits); i++ {
+			fmt.Printf("%.4f ", logits[i])
+		}
+		fmt.Println()
+	}
+
 	// Make a copy
 	logitsCopy := make([]float32, len(logits))
 	copy(logitsCopy, logits)

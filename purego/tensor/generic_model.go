@@ -1,5 +1,7 @@
 package tensor
 
+import "fmt"
+
 // TransformerModel is a generic transformer that adapts to different architectures
 type TransformerModel struct {
 	Config *ModelConfig
@@ -127,9 +129,16 @@ func NewGenericBlockWithType(config *ModelConfig, layerType string) *GenericBloc
 
 // Forward applies the transformer block based on block style
 func (block *GenericBlock) Forward(x *Tensor) *Tensor {
-	// Check if this is a Mamba2 layer (no FFN)
-	if block.FFN == nil {
-		// Mamba2 layer - has integrated forward pass with residual
+	// Debug: Uncomment to trace layer execution
+	// if _, isMamba := block.Attention.(*Mamba2Layer); isMamba {
+	// 	fmt.Println("DEBUG: Executing Mamba2 layer")
+	// } else {
+	// 	fmt.Println("DEBUG: Executing Attention layer")
+	// }
+
+	// Check if this is a Mamba2 layer by checking the Attention type
+	if _, isMamba := block.Attention.(*Mamba2Layer); isMamba {
+		// Mamba2 layer - has special forward pass
 		return block.forwardMamba2(x)
 	}
 
@@ -141,11 +150,28 @@ func (block *GenericBlock) Forward(x *Tensor) *Tensor {
 
 // forwardMamba2: Mamba2 layer with residual connection
 func (block *GenericBlock) forwardMamba2(x *Tensor) *Tensor {
-	// Mamba2 has integrated norm, gating, and projection
-	// Just add residual connection
+	// Granite's Mamba2 layers follow sequential style like attention layers:
+	// 1. Norm + Mamba2 + residual
+	// 2. Norm + FFN + residual
+
+	// Mamba2 with residual
 	residual := x
+	if block.AttnLN != nil {
+		x = block.AttnLN.Forward(x)
+	}
 	x = block.Attention.Forward(x)
 	x = Add(x, residual)
+
+	// FFN with residual (Granite has shared_mlp for Mamba2 layers)
+	if block.FFN != nil {
+		residual = x
+		if block.FFNLN != nil {
+			x = block.FFNLN.Forward(x)
+		}
+		x = block.FFN.Forward(x)
+		x = Add(x, residual)
+	}
+
 	return x
 }
 
@@ -212,6 +238,13 @@ func (m *TransformerModel) Forward(tokenIDs []int) *Tensor {
 	}
 	logits = logits.Reshape(batchSize, seqLen, m.Config.VocabSize)
 
+	// Apply logits scaling if set (Granite muP scaling)
+	if m.Config.LogitsScaling != 0 {
+		for i := range logits.Data {
+			logits.Data[i] *= m.Config.LogitsScaling
+		}
+	}
+
 	return logits
 }
 
@@ -225,7 +258,12 @@ func (m *TransformerModel) embed(tokenIDs []int) *Tensor {
 	for i, tokenID := range tokenIDs {
 		// Token embedding
 		for j := 0; j < hidden; j++ {
-			result.Data[i*hidden+j] = m.TokenEmbedding.Data[tokenID*hidden+j]
+			embVal := m.TokenEmbedding.Data[tokenID*hidden+j]
+			// Apply embedding multiplier if set (Granite muP scaling)
+			if m.Config.EmbeddingMultiplier != 0 {
+				embVal *= m.Config.EmbeddingMultiplier
+			}
+			result.Data[i*hidden+j] = embVal
 		}
 
 		// Add position embedding if using learned positions

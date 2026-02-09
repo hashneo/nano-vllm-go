@@ -7,11 +7,11 @@ import "math"
 
 // RoPECache stores precomputed sin/cos values
 type RoPECache struct {
-	CosCache *Tensor // [max_seq_len, head_dim]
-	SinCache *Tensor // [max_seq_len, head_dim]
-	HeadDim  int
+	CosCache  *Tensor // [max_seq_len, head_dim]
+	SinCache  *Tensor // [max_seq_len, head_dim]
+	HeadDim   int
 	MaxSeqLen int
-	Base     float64 // Usually 10000.0
+	Base      float64 // Usually 10000.0
 }
 
 // NewRoPECache creates a cache of rotary embeddings

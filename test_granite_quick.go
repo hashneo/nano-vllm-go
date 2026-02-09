@@ -26,8 +26,17 @@ func main() {
 		nanovllm.WithMaxNumBatchedTokens(512),
 	)
 
-	// Create LLM
-	llm := nanovllm.NewLLM(config)
+	// Create real model runner
+	modelRunner, err := nanovllm.NewTensorModelRunner(modelDir)
+	if err != nil {
+		log.Fatalf("Failed to create model runner: %v\n", err)
+	}
+
+	// Create tokenizer
+	tokenizer := nanovllm.NewMockTokenizer(config.EOS)
+
+	// Create LLM with real model
+	llm := nanovllm.NewLLMWithComponents(config, modelRunner, tokenizer)
 	defer llm.Close()
 
 	// Set up sampling parameters - 20 tokens (practical for demos)
@@ -59,5 +68,20 @@ func main() {
 		fmt.Printf("\nPrompt: %s\n", prompts[i])
 		fmt.Printf("Output: %s\n", output.Text)
 		fmt.Printf("Tokens: %d\n", len(output.TokenIDs))
+		fmt.Printf("Token IDs: %v\n", output.TokenIDs)
+
+		// Check for sequential pattern
+		if len(output.TokenIDs) > 2 {
+			sequential := true
+			for j := 1; j < len(output.TokenIDs); j++ {
+				if output.TokenIDs[j] != output.TokenIDs[j-1]+1 {
+					sequential = false
+					break
+				}
+			}
+			if sequential {
+				fmt.Println("⚠️  WARNING: Token IDs are sequential - logits appear uniform!")
+			}
+		}
 	}
 }

@@ -128,11 +128,11 @@ func (m *GPT2Model) PrintInfo() {
 
 	// Count parameters
 	params := 0
-	params += m.Config.VocabSize * m.Config.Hidden           // token embedding
-	params += m.Config.MaxSeqLen * m.Config.Hidden           // position embedding
+	params += m.Config.VocabSize * m.Config.Hidden                        // token embedding
+	params += m.Config.MaxSeqLen * m.Config.Hidden                        // position embedding
 	params += m.Config.NumLayers * 12 * m.Config.Hidden * m.Config.Hidden // attention (Q,K,V,O x 3 weights + biases)
 	params += m.Config.NumLayers * 2 * m.Config.Hidden * m.Config.FFNDim  // FFN
-	params += m.Config.Hidden * m.Config.VocabSize           // LM head
+	params += m.Config.Hidden * m.Config.VocabSize                        // LM head
 
 	fmt.Printf("  Parameters: ~%.1fM\n", float64(params)/1e6)
 }

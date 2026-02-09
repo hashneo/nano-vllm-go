@@ -11,15 +11,15 @@ type MultiHeadAttention struct {
 	Hidden   int
 
 	// Weights
-	QWeight *Tensor // [hidden, hidden]
-	KWeight *Tensor
-	VWeight *Tensor
+	QWeight   *Tensor // [hidden, hidden]
+	KWeight   *Tensor
+	VWeight   *Tensor
 	OutWeight *Tensor
 
 	// Biases
-	QBias *Tensor // [hidden]
-	KBias *Tensor
-	VBias *Tensor
+	QBias   *Tensor // [hidden]
+	KBias   *Tensor
+	VBias   *Tensor
 	OutBias *Tensor
 }
 
@@ -172,6 +172,7 @@ func (mha *MultiHeadAttention) scaledDotProductAttention(Q, K, V *Tensor) *Tenso
 
 	return result
 }
+
 // GroupedQueryAttention implements grouped-query attention (GQA)
 type GroupedQueryAttention struct {
 	NumHeads   int // Number of query heads

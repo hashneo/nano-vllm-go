@@ -10,33 +10,33 @@ type Mamba2Layer struct {
 	Config *ModelConfig
 
 	// SSM parameters
-	ALog        *Tensor // [num_heads, state_size] - log-space diagonal A matrix
-	D           *Tensor // [expand * hidden] - skip connection
-	Norm        *Tensor // [expand * hidden] - normalization scale
-	DeltaBias   *Tensor // [num_heads] - bias for time step
+	ALog      *Tensor // [num_heads, state_size] - log-space diagonal A matrix
+	D         *Tensor // [expand * hidden] - skip connection
+	Norm      *Tensor // [expand * hidden] - normalization scale
+	DeltaBias *Tensor // [num_heads] - bias for time step
 
 	// Projection weights
-	InProj      *Tensor // [hidden, 2 * expand * hidden] - projects input to x and z
-	ConvWeight  *Tensor // [expand * hidden, 1, conv_kernel] - causal conv
-	ConvBias    *Tensor // [expand * hidden] - conv bias
-	XProj       *Tensor // [expand * hidden, dt_rank + 2 * n_groups * state_size] - projects to B, C, delta
-	DtProj      *Tensor // [dt_rank, num_heads] - projects delta rank to heads
-	OutProj     *Tensor // [expand * hidden, hidden] - output projection
+	InProj     *Tensor // [hidden, 2 * expand * hidden] - projects input to x and z
+	ConvWeight *Tensor // [expand * hidden, 1, conv_kernel] - causal conv
+	ConvBias   *Tensor // [expand * hidden] - conv bias
+	XProj      *Tensor // [expand * hidden, dt_rank + 2 * n_groups * state_size] - projects to B, C, delta
+	DtProj     *Tensor // [dt_rank, num_heads] - projects delta rank to heads
+	OutProj    *Tensor // [expand * hidden, hidden] - output projection
 
 	// Cache for inference
-	ConvCache   *Tensor // [batch, expand * hidden, conv_kernel]
-	SSMState    *Tensor // [batch, num_heads, head_dim, state_size]
+	ConvCache *Tensor // [batch, expand * hidden, conv_kernel]
+	SSMState  *Tensor // [batch, num_heads, head_dim, state_size]
 
 	// Config shortcuts
-	hidden      int
-	expand      int
-	stateSize   int
-	numHeads    int
-	headDim     int
-	nGroups     int
-	convKernel  int
-	dtRank      int
-	chunkSize   int
+	hidden     int
+	expand     int
+	stateSize  int
+	numHeads   int
+	headDim    int
+	nGroups    int
+	convKernel int
+	dtRank     int
+	chunkSize  int
 }
 
 // NewMamba2Layer creates a new Mamba2 layer

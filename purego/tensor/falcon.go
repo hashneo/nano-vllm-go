@@ -164,10 +164,10 @@ func (m *FalconModel) PrintInfo() {
 	// - FFN: 2 * hidden * ffn_dim
 	headDim := m.Config.Hidden / m.Config.NumHeads
 	paramsPerLayer := 0
-	paramsPerLayer += m.Config.Hidden * m.Config.Hidden      // Q
-	paramsPerLayer += m.Config.Hidden * (headDim * 2)        // KV (shared!)
-	paramsPerLayer += m.Config.Hidden * m.Config.Hidden      // Out
-	paramsPerLayer += 2 * m.Config.Hidden * m.Config.FFNDim  // FFN
+	paramsPerLayer += m.Config.Hidden * m.Config.Hidden     // Q
+	paramsPerLayer += m.Config.Hidden * (headDim * 2)       // KV (shared!)
+	paramsPerLayer += m.Config.Hidden * m.Config.Hidden     // Out
+	paramsPerLayer += 2 * m.Config.Hidden * m.Config.FFNDim // FFN
 	params += m.Config.NumLayers * paramsPerLayer
 
 	params += m.Config.Hidden * m.Config.VocabSize // LM head

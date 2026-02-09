@@ -27,12 +27,12 @@ func (block *TransformerBlock) Forward(x *Tensor) *Tensor {
 
 // FeedForward implements the feed-forward network
 type FeedForward struct {
-	W1   *Tensor // [hidden, ffn_dim] or [hidden, 2*ffn_dim] for SwiGLU
-	B1   *Tensor // [ffn_dim] or [2*ffn_dim] for SwiGLU
-	W2   *Tensor // [ffn_dim, hidden]
-	B2   *Tensor // [hidden]
-	Hidden int
-	FFNDim int
+	W1        *Tensor // [hidden, ffn_dim] or [hidden, 2*ffn_dim] for SwiGLU
+	B1        *Tensor // [ffn_dim] or [2*ffn_dim] for SwiGLU
+	W2        *Tensor // [ffn_dim, hidden]
+	B2        *Tensor // [hidden]
+	Hidden    int
+	FFNDim    int
 	UseSwiGLU bool // If true, use SwiGLU instead of GELU
 }
 

@@ -188,29 +188,55 @@ func GELU(t *Tensor) *Tensor {
 func LayerNorm(t *Tensor, weight, bias *Tensor, eps float32) *Tensor {
 	result := NewTensor(t.Shape...)
 
-	if len(t.Shape) == 2 {
-		rows, cols := t.Shape[0], t.Shape[1]
-		for i := 0; i < rows; i++ {
-			// Compute mean
-			mean := float32(0)
-			for j := 0; j < cols; j++ {
-				mean += t.Data[i*cols+j]
-			}
-			mean /= float32(cols)
+	// Determine if RMSNorm (no bias) or LayerNorm (with bias)
+	isRMSNorm := (bias == nil)
 
-			// Compute variance
+	// Get the last dimension size (the dimension to normalize over)
+	hiddenSize := t.Shape[len(t.Shape)-1]
+
+	// Flatten to 2D: [batch*seq, hidden] or [batch, hidden]
+	totalRows := 1
+	for i := 0; i < len(t.Shape)-1; i++ {
+		totalRows *= t.Shape[i]
+	}
+
+	for i := 0; i < totalRows; i++ {
+		offset := i * hiddenSize
+
+		if isRMSNorm {
+			// RMSNorm: compute RMS (no mean subtraction)
+			rms := float32(0)
+			for j := 0; j < hiddenSize; j++ {
+				val := t.Data[offset+j]
+				rms += val * val
+			}
+			rms = float32(math.Sqrt(float64(rms/float32(hiddenSize) + eps)))
+
+			// Normalize and scale
+			for j := 0; j < hiddenSize; j++ {
+				normalized := t.Data[offset+j] / rms
+				result.Data[offset+j] = normalized * weight.Data[j]
+			}
+		} else {
+			// LayerNorm: compute mean and variance
+			mean := float32(0)
+			for j := 0; j < hiddenSize; j++ {
+				mean += t.Data[offset+j]
+			}
+			mean /= float32(hiddenSize)
+
 			variance := float32(0)
-			for j := 0; j < cols; j++ {
-				diff := t.Data[i*cols+j] - mean
+			for j := 0; j < hiddenSize; j++ {
+				diff := t.Data[offset+j] - mean
 				variance += diff * diff
 			}
-			variance /= float32(cols)
+			variance /= float32(hiddenSize)
 
 			// Normalize
 			std := float32(math.Sqrt(float64(variance + eps)))
-			for j := 0; j < cols; j++ {
-				normalized := (t.Data[i*cols+j] - mean) / std
-				result.Data[i*cols+j] = normalized*weight.Data[j] + bias.Data[j]
+			for j := 0; j < hiddenSize; j++ {
+				normalized := (t.Data[offset+j] - mean) / std
+				result.Data[offset+j] = normalized*weight.Data[j] + bias.Data[j]
 			}
 		}
 	}

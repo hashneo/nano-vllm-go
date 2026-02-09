@@ -65,8 +65,8 @@ func main() {
 	config := nanovllm.NewConfig(
 		".",
 		nanovllm.WithMaxNumSeqs(16),
-		nanovllm.WithMaxModelLen(8192),           // Support up to 8K tokens per sequence
-		nanovllm.WithMaxNumBatchedTokens(8192),   // Must be >= max_model_len
+		nanovllm.WithMaxModelLen(8192),         // Support up to 8K tokens per sequence
+		nanovllm.WithMaxNumBatchedTokens(8192), // Must be >= max_model_len
 	)
 
 	// Load model (auto-detects architecture!)
