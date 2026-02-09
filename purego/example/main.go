@@ -14,7 +14,7 @@ func main() {
 	fmt.Println()
 
 	// Configuration
-	modelPath := "./model.onnx"        // Path to ONNX model
+	modelPath := "./model.onnx"         // Path to ONNX model
 	tokenizerPath := "./tokenizer.json" // Path to tokenizer
 
 	// Create config
@@ -41,7 +41,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create tokenizer: %v", err)
 	}
-	defer tokenizer.Close()
 
 	// Update config with actual EOS token
 	config.EOS = tokenizer.EOSTokenID()
