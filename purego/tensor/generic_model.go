@@ -69,9 +69,20 @@ func NewGenericBlockWithType(config *ModelConfig, layerType string) *GenericBloc
 	}
 
 	// Create layer based on type
-	if layerType == "mamba2" {
+	// Accept both "mamba" (Granite convention) and "mamba2" (our internal name)
+	if layerType == "mamba2" || layerType == "mamba" {
 		// Create Mamba2 layer
 		block.Attention = NewMamba2Layer(config)
+
+		// Mamba2 layers in Granite also have FFN (shared_mlp) and norms
+		block.FFN = &FeedForward{
+			Hidden:    config.Hidden,
+			FFNDim:    config.FFNDim,
+			UseSwiGLU: config.ActivationType == ActivationSwiGLU,
+		}
+		// Use AttnLN and FFNLN for the two norms
+		block.AttnLN = &LayerNormLayer{Eps: config.NormEps}
+		block.FFNLN = &LayerNormLayer{Eps: config.NormEps}
 	} else {
 		// Create attention based on type
 		switch config.AttentionType {
@@ -84,19 +95,20 @@ func NewGenericBlockWithType(config *ModelConfig, layerType string) *GenericBloc
 				Hidden:   config.Hidden,
 			}
 		case AttentionGQA:
-			// GQA implementation (similar to MQA but with multiple KV heads)
-			// For now, fall back to MHA
-			block.Attention = &MultiHeadAttention{
-				NumHeads: config.NumHeads,
-				HeadDim:  config.HeadDim,
-				Hidden:   config.Hidden,
+			// Grouped-Query Attention: multiple KV heads
+			block.Attention = &GroupedQueryAttention{
+				NumHeads:   config.NumHeads,
+				NumKVHeads: config.NumKVHeads,
+				HeadDim:    config.HeadDim,
+				Hidden:     config.Hidden,
 			}
 		}
 
 		// Create FFN (only for attention layers, Mamba2 has its own)
 		block.FFN = &FeedForward{
-			Hidden: config.Hidden,
-			FFNDim: config.FFNDim,
+			Hidden:    config.Hidden,
+			FFNDim:    config.FFNDim,
+			UseSwiGLU: config.ActivationType == ActivationSwiGLU,
 		}
 
 		// Create norms based on block style

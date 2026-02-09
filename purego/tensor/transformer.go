@@ -27,12 +27,13 @@ func (block *TransformerBlock) Forward(x *Tensor) *Tensor {
 
 // FeedForward implements the feed-forward network
 type FeedForward struct {
-	W1   *Tensor // [hidden, ffn_dim]
-	B1   *Tensor // [ffn_dim]
+	W1   *Tensor // [hidden, ffn_dim] or [hidden, 2*ffn_dim] for SwiGLU
+	B1   *Tensor // [ffn_dim] or [2*ffn_dim] for SwiGLU
 	W2   *Tensor // [ffn_dim, hidden]
 	B2   *Tensor // [hidden]
 	Hidden int
 	FFNDim int
+	UseSwiGLU bool // If true, use SwiGLU instead of GELU
 }
 
 // Forward applies the feed-forward network
@@ -46,17 +47,33 @@ func (ffn *FeedForward) Forward(x *Tensor) *Tensor {
 	// First linear layer
 	x = MatMul(xFlat, ffn.W1)
 
-	// Add bias
-	if ffn.B1 != nil {
-		for i := 0; i < batchSize*seqLen; i++ {
-			for j := 0; j < ffn.FFNDim; j++ {
-				x.Data[i*ffn.FFNDim+j] += ffn.B1.Data[j]
+	if ffn.UseSwiGLU {
+		// SwiGLU: W1 projects to 2*ffn_dim, split into value and gate
+		// x shape: [batch*seq, 2*ffn_dim]
+		halfDim := ffn.FFNDim
+
+		// Split into value and gate
+		value := x.SliceLastDim(0, halfDim)
+		gate := x.SliceLastDim(halfDim, 2*halfDim)
+
+		// Apply SiLU to gate and multiply with value
+		gate = SiLU(gate)
+		x = NewTensor(value.Shape...)
+		for i := 0; i < len(value.Data); i++ {
+			x.Data[i] = value.Data[i] * gate.Data[i]
+		}
+	} else {
+		// Standard GELU activation
+		// Add bias
+		if ffn.B1 != nil {
+			for i := 0; i < batchSize*seqLen; i++ {
+				for j := 0; j < ffn.FFNDim; j++ {
+					x.Data[i*ffn.FFNDim+j] += ffn.B1.Data[j]
+				}
 			}
 		}
+		x = GELU(x)
 	}
-
-	// Activation
-	x = GELU(x)
 
 	// Second linear layer
 	x = MatMul(x, ffn.W2)

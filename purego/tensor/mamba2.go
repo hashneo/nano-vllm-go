@@ -47,14 +47,18 @@ func NewMamba2Layer(config *ModelConfig) *Mamba2Layer {
 		expand:     config.Mamba2Expand,
 		stateSize:  config.Mamba2StateSize,
 		numHeads:   config.Mamba2NumHeads,
+		headDim:    config.Mamba2HeadDim,
 		nGroups:    config.Mamba2NGroups,
 		convKernel: config.Mamba2ConvKernel,
 		dtRank:     config.Mamba2DtRank,
 		chunkSize:  config.Mamba2ChunkSize,
 	}
 
-	// Calculate head dimension
-	layer.headDim = layer.stateSize / layer.numHeads
+	// Use head dimension from config, or calculate if not set
+	if layer.headDim == 0 {
+		// Default: expand * hidden / num_heads
+		layer.headDim = (layer.expand * layer.hidden) / layer.numHeads
+	}
 
 	// Calculate dt_rank if not set
 	if layer.dtRank == 0 {
@@ -72,34 +76,37 @@ func (m *Mamba2Layer) Forward(x *Tensor) *Tensor {
 	seqLen := x.Shape[1]
 	hidden := x.Shape[2]
 
-	// 1. Input projection: x -> (x, z)
-	xz := MatMul(x.Reshape(batch*seqLen, hidden), m.InProj) // [batch*seq, 2*expand*hidden]
 	expandHidden := m.expand * m.hidden
 
-	// Split into x and z (for gating)
-	xPart := xz.SliceLastDim(0, expandHidden)
-	zPart := xz.SliceLastDim(expandHidden, 2*expandHidden)
+	// 1. Input projection: x -> (x, z, B, C, delta)
+	// InProj shape: [in_proj_out, hidden] where in_proj_out = 2*expand*hidden + dt_rank + 2*n_groups*state_size
+	xFlat := x.Reshape(batch*seqLen, hidden)
+	projected := MatMul(xFlat, Transpose(m.InProj)) // [batch*seq, in_proj_out]
+
+	// Calculate split sizes
+	dtRank := m.dtRank
+	if dtRank == 0 {
+		dtRank = (hidden + 15) / 16
+	}
+	BCSize := 2 * m.nGroups * m.stateSize
+
+	// Split the projection
+	// [x: 0:expandHidden, z: expandHidden:2*expandHidden, params: 2*expandHidden:]
+	xPart := projected.SliceLastDim(0, expandHidden)
+	zPart := projected.SliceLastDim(expandHidden, 2*expandHidden)
+	params := projected.SliceLastDim(2*expandHidden, projected.Shape[1])
 
 	xPart = xPart.Reshape(batch, seqLen, expandHidden)
 	zPart = zPart.Reshape(batch, seqLen, expandHidden)
 
-	// 2. Causal convolution
-	xConv := m.causalConv1d(xPart)
+	// 2. Extract B, C, delta from the params
+	// Calculate the size of params last dimension
+	paramsSize := len(params.Data) / (batch * seqLen)
+	params = params.Reshape(batch, seqLen, paramsSize)
 
-	// 3. Activation (SiLU)
-	xConv = SiLU(xConv)
-
-	// 4. SSM projection to B, C, delta
-	xFlat := xConv.Reshape(batch*seqLen, expandHidden)
-	xProj := MatMul(xFlat, m.XProj) // [batch*seq, dt_rank + 2*n_groups*state_size]
-	xProj = xProj.Reshape(batch, seqLen, -1)
-
-	// Split into delta_input, B, C
-	dtRank := m.dtRank
-	BCSize := 2 * m.nGroups * m.stateSize
-
-	deltaInput := xProj.SliceLastDim(0, dtRank)
-	BC := xProj.SliceLastDim(dtRank, dtRank+BCSize)
+	// Split params into delta and BC
+	deltaRaw := params.SliceLastDim(0, dtRank)
+	BC := params.SliceLastDim(dtRank, dtRank+BCSize)
 
 	// Split B and C
 	B := BC.SliceLastDim(0, m.nGroups*m.stateSize)
@@ -109,10 +116,28 @@ func (m *Mamba2Layer) Forward(x *Tensor) *Tensor {
 	B = B.Reshape(batch, seqLen, m.nGroups, m.stateSize)
 	C = C.Reshape(batch, seqLen, m.nGroups, m.stateSize)
 
-	// 5. Project delta from dt_rank to num_heads
-	deltaFlat := deltaInput.Reshape(batch*seqLen, dtRank)
-	delta := MatMul(deltaFlat, m.DtProj) // [batch*seq, num_heads]
-	delta = delta.Reshape(batch, seqLen, m.numHeads)
+	// 3. Project delta from dt_rank to num_heads (if DtProj exists)
+	var delta *Tensor
+	if m.DtProj != nil {
+		deltaFlat := deltaRaw.Reshape(batch*seqLen, dtRank)
+		delta = MatMul(deltaFlat, m.DtProj) // [batch*seq, num_heads]
+		delta = delta.Reshape(batch, seqLen, m.numHeads)
+	} else {
+		// If no DtProj, delta should already be num_heads dimension
+		// This shouldn't happen but handle gracefully
+		delta = deltaRaw
+		if delta.Shape[2] != m.numHeads {
+			// Reshape or pad as needed
+			delta = deltaRaw.SliceLastDim(0, m.numHeads)
+			delta = delta.Reshape(batch, seqLen, m.numHeads)
+		}
+	}
+
+	// 4. Causal convolution on x
+	xConv := m.causalConv1d(xPart)
+
+	// 5. Activation (SiLU)
+	xConv = SiLU(xConv)
 
 	// Add bias and apply softplus to keep positive
 	if m.DeltaBias != nil {
@@ -140,8 +165,9 @@ func (m *Mamba2Layer) Forward(x *Tensor) *Tensor {
 	}
 
 	// 9. Output projection
+	// OutProj is [hidden, expand*hidden] in PyTorch format, need to transpose
 	yFlat := y.Reshape(batch*seqLen, expandHidden)
-	output := MatMul(yFlat, m.OutProj)
+	output := MatMul(yFlat, Transpose(m.OutProj))
 	output = output.Reshape(batch, seqLen, m.hidden)
 
 	return output
@@ -216,19 +242,11 @@ func (m *Mamba2Layer) selectiveScan(x, B, C, delta *Tensor, batch, seqLen int) *
 				dt := delta.Data[deltaIdx]
 
 				// Discretize A matrix: A_bar = exp(dt * A_log)
-				// A is diagonal, stored in log space
-				var ABar []float32
-				if m.ALog != nil {
-					ABar = make([]float32, m.stateSize)
-					for s := 0; s < m.stateSize; s++ {
-						aIdx := h*m.stateSize + s
-						ABar[s] = float32(math.Exp(float64(dt * m.ALog.Data[aIdx])))
-					}
-				} else {
-					ABar = make([]float32, m.stateSize)
-					for s := 0; s < m.stateSize; s++ {
-						ABar[s] = 1.0
-					}
+				// In Granite, A_log is just [num_heads], one value per head
+				var ABar float32 = 1.0
+				if m.ALog != nil && len(m.ALog.Data) > h {
+					// Single A value per head, broadcast to all state dims
+					ABar = float32(math.Exp(float64(dt * m.ALog.Data[h])))
 				}
 
 				// Get input for this timestep
@@ -263,7 +281,8 @@ func (m *Mamba2Layer) selectiveScan(x, B, C, delta *Tensor, batch, seqLen int) *
 
 						// State update: x[n+1] = A_bar * x[n] + dt * B * u[n]
 						oldState := m.SSMState.Data[stateIdx]
-						m.SSMState.Data[stateIdx] = ABar[s]*oldState + dt*Bt[s]*u[d]
+						// ABar is now a scalar per head, broadcast to all states
+						m.SSMState.Data[stateIdx] = ABar*oldState + dt*Bt[s]*u[d]
 					}
 				}
 
@@ -276,9 +295,9 @@ func (m *Mamba2Layer) selectiveScan(x, B, C, delta *Tensor, batch, seqLen int) *
 					}
 
 					// Add skip connection (D * u)
-					if m.D != nil {
-						dIdx := h*m.headDim + d
-						sum += m.D.Data[dIdx] * u[d]
+					// In Granite, D is [num_heads], one value per head
+					if m.D != nil && len(m.D.Data) > h {
+						sum += m.D.Data[h] * u[d]
 					}
 
 					outIdx := b*seqLen*m.numHeads*m.headDim + t*m.numHeads*m.headDim + h*m.headDim + d

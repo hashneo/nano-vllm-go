@@ -27,6 +27,7 @@ type WeightMapping struct {
 	AttnNormKey       string // e.g., ".ln_1.weight"
 	FFNNormKey        string // e.g., ".ln_2.weight"
 	InputNormKey      string // For parallel blocks, e.g., ".input_layernorm.weight"
+	PostAttnNormKey   string // Post-attention norm (Granite)
 
 	// Final norm keys
 	FinalNormKey string // e.g., "ln_f.weight", "transformer.ln_f.weight"
@@ -34,6 +35,19 @@ type WeightMapping struct {
 	// Combined QKV handling
 	QKVCombined bool // Whether Q,K,V are in one weight matrix
 	QKVSplitFn  func(*Tensor, *ModelConfig) (*Tensor, *Tensor, *Tensor)
+
+	// Weight format
+	TransposeWeights bool // If true, weights are in PyTorch format [out, in] and need transposing
+
+	// Mamba2 keys (for hybrid architectures like Granite)
+	Mamba2ALogKey      string // e.g., ".mamba.A_log"
+	Mamba2DKey         string // e.g., ".mamba.D"
+	Mamba2Conv1dWeight string // e.g., ".mamba.conv1d.weight"
+	Mamba2Conv1dBias   string // e.g., ".mamba.conv1d.bias"
+	Mamba2DtBiasKey    string // e.g., ".mamba.dt_bias"
+	Mamba2InProjKey    string // e.g., ".mamba.in_proj.weight"
+	Mamba2NormKey      string // e.g., ".mamba.norm.weight"
+	Mamba2OutProjKey   string // e.g., ".mamba.out_proj.weight"
 }
 
 // GetGPT2Mapping returns weight mapping for GPT-2
@@ -92,6 +106,43 @@ func GetLlamaMapping() *WeightMapping {
 	}
 }
 
+// GetGraniteMapping returns weight mapping for Granite (hybrid Mamba2 + Attention)
+func GetGraniteMapping() *WeightMapping {
+	return &WeightMapping{
+		TokenEmbeddingKey: "model.embed_tokens.weight",
+		PosEmbeddingKey:   "", // Uses NoPE (no positional encoding)
+		LMHeadKey:         "", // Tied with token embedding
+		LayerPrefix:       "model.layers.{layer}",
+
+		// Attention keys (for attention layers)
+		AttentionQKey:   ".self_attn.q_proj.weight",
+		AttentionKVKey:  ".self_attn.k_proj.weight", // Separate K,V for GQA
+		AttentionOutKey: ".self_attn.o_proj.weight",
+
+		// Shared MLP (used by both attention and Mamba2 layers)
+		FFNUpKey:   ".shared_mlp.input_linear.weight",
+		FFNDownKey: ".shared_mlp.output_linear.weight",
+
+		// Norms
+		InputNormKey:    ".input_layernorm.weight",
+		PostAttnNormKey: ".post_attention_layernorm.weight",
+		FinalNormKey:    "model.norm.weight",
+
+		// Mamba2 keys (for Mamba2 layers)
+		Mamba2ALogKey:      ".mamba.A_log",
+		Mamba2DKey:         ".mamba.D",
+		Mamba2Conv1dWeight: ".mamba.conv1d.weight",
+		Mamba2Conv1dBias:   ".mamba.conv1d.bias",
+		Mamba2DtBiasKey:    ".mamba.dt_bias",
+		Mamba2InProjKey:    ".mamba.in_proj.weight",
+		Mamba2NormKey:      ".mamba.norm.weight",
+		Mamba2OutProjKey:   ".mamba.out_proj.weight",
+
+		QKVCombined:      false, // Granite has separate Q, K, V
+		TransposeWeights: true,  // Granite uses PyTorch format, needs transpose
+	}
+}
+
 // LoadModel loads a transformer model from safetensors
 func LoadModel(modelPath string, config *ModelConfig) (*TransformerModel, error) {
 	// Read safetensors file
@@ -121,6 +172,8 @@ func LoadModel(modelPath string, config *ModelConfig) (*TransformerModel, error)
 		mapping = GetFalconMapping()
 	case ArchLlama:
 		mapping = GetLlamaMapping()
+	case ArchGranite:
+		mapping = GetGraniteMapping()
 	default:
 		return nil, fmt.Errorf("unsupported architecture: %s", config.Architecture)
 	}
@@ -170,27 +223,74 @@ func loadBlock(tensorData []byte, metadata map[string]TensorInfo, mapping *Weigh
 	// Replace {layer} with actual layer number
 	prefix := strings.ReplaceAll(mapping.LayerPrefix, "{layer}", fmt.Sprintf("%d", layer))
 
-	// Load attention weights
-	if err := loadAttention(tensorData, metadata, mapping, block, prefix, config); err != nil {
-		return fmt.Errorf("attention: %w", err)
+	// Check if this is a hybrid architecture (Granite)
+	isMamba2 := false
+	if len(config.HybridLayers) > layer {
+		// Granite uses "mamba" in config, but we call them "mamba2" internally
+		layerType := config.HybridLayers[layer]
+		isMamba2 = layerType == "mamba2" || layerType == "mamba"
 	}
 
-	// Load FFN weights
-	if err := loadFFN(tensorData, metadata, mapping, block, prefix); err != nil {
-		return fmt.Errorf("FFN: %w", err)
-	}
+	if isMamba2 {
+		// Load Mamba2 layer
+		if err := loadMamba2(tensorData, metadata, mapping, block, prefix, config); err != nil {
+			return fmt.Errorf("mamba2: %w", err)
+		}
 
-	// Load norms
-	if config.BlockStyle == BlockParallel {
-		if err := loadNorm(tensorData, metadata, prefix+mapping.InputNormKey, block.InputLN); err != nil {
-			return fmt.Errorf("input norm: %w", err)
+		// Mamba2 layers still have shared MLP
+		if err := loadFFN(tensorData, metadata, mapping, block, prefix); err != nil {
+			return fmt.Errorf("FFN: %w", err)
+		}
+
+		// Load norms for Mamba2 layer
+		inputNormKey := prefix + mapping.InputNormKey
+		if inputNormKey == "" || mapping.InputNormKey == "" {
+			return fmt.Errorf("input norm key is empty (prefix=%s, InputNormKey=%s)", prefix, mapping.InputNormKey)
+		}
+		if err := loadNorm(tensorData, metadata, inputNormKey, block.AttnLN); err != nil {
+			return fmt.Errorf("input norm (key=%s): %w", inputNormKey, err)
+		}
+		if mapping.PostAttnNormKey != "" {
+			postNormKey := prefix + mapping.PostAttnNormKey
+			if err := loadNorm(tensorData, metadata, postNormKey, block.FFNLN); err != nil {
+				return fmt.Errorf("post attn norm (key=%s): %w", postNormKey, err)
+			}
 		}
 	} else {
-		if err := loadNorm(tensorData, metadata, prefix+mapping.AttnNormKey, block.AttnLN); err != nil {
-			return fmt.Errorf("attn norm: %w", err)
+		// Load attention weights
+		if err := loadAttention(tensorData, metadata, mapping, block, prefix, config); err != nil {
+			return fmt.Errorf("attention: %w", err)
 		}
-		if err := loadNorm(tensorData, metadata, prefix+mapping.FFNNormKey, block.FFNLN); err != nil {
-			return fmt.Errorf("FFN norm: %w", err)
+
+		// Load FFN weights
+		if err := loadFFN(tensorData, metadata, mapping, block, prefix); err != nil {
+			return fmt.Errorf("FFN: %w", err)
+		}
+
+		// Load norms
+		if config.BlockStyle == BlockParallel {
+			if err := loadNorm(tensorData, metadata, prefix+mapping.InputNormKey, block.InputLN); err != nil {
+				return fmt.Errorf("input norm: %w", err)
+			}
+		} else {
+			// Sequential: load two norms
+			// For Granite, use InputNormKey if AttnNormKey is empty
+			attnNormKey := mapping.AttnNormKey
+			if attnNormKey == "" {
+				attnNormKey = mapping.InputNormKey
+			}
+			if err := loadNorm(tensorData, metadata, prefix+attnNormKey, block.AttnLN); err != nil {
+				return fmt.Errorf("attn norm: %w", err)
+			}
+
+			// For second norm, prefer PostAttnNormKey, then FFNNormKey
+			if mapping.PostAttnNormKey != "" {
+				if err := loadNorm(tensorData, metadata, prefix+mapping.PostAttnNormKey, block.FFNLN); err != nil {
+					return fmt.Errorf("FFN norm: %w", err)
+				}
+			} else if err := loadNorm(tensorData, metadata, prefix+mapping.FFNNormKey, block.FFNLN); err != nil {
+				return fmt.Errorf("FFN norm: %w", err)
+			}
 		}
 	}
 
@@ -219,6 +319,30 @@ func loadAttention(tensorData []byte, metadata map[string]TensorInfo, mapping *W
 		}
 		loadTensorRequired(tensorData, metadata, prefix+mapping.AttentionOutKey, &attn.OutWeight)
 
+		// Transpose if PyTorch format
+		if mapping.TransposeWeights {
+			attn.QWeight = Transpose(attn.QWeight)
+			if attn.KVWeight != nil {
+				attn.KVWeight = Transpose(attn.KVWeight)
+			}
+			attn.OutWeight = Transpose(attn.OutWeight)
+		}
+
+	case *GroupedQueryAttention:
+		// GQA: Load separate Q, K, V weights
+		loadTensorRequired(tensorData, metadata, prefix+mapping.AttentionQKey, &attn.QWeight)
+		loadTensorRequired(tensorData, metadata, prefix+".self_attn.k_proj.weight", &attn.KWeight)
+		loadTensorRequired(tensorData, metadata, prefix+".self_attn.v_proj.weight", &attn.VWeight)
+		loadTensorRequired(tensorData, metadata, prefix+mapping.AttentionOutKey, &attn.OutWeight)
+
+		// Transpose if PyTorch format
+		if mapping.TransposeWeights {
+			attn.QWeight = Transpose(attn.QWeight)
+			attn.KWeight = Transpose(attn.KWeight)
+			attn.VWeight = Transpose(attn.VWeight)
+			attn.OutWeight = Transpose(attn.OutWeight)
+		}
+
 	case *MultiHeadAttention:
 		// MHA: Load combined or separate Q,K,V
 		if mapping.QKVCombined {
@@ -238,15 +362,83 @@ func loadAttention(tensorData []byte, metadata map[string]TensorInfo, mapping *W
 			loadTensorOptional(tensorData, metadata, prefix+".self_attn.v_proj.weight", &attn.VWeight)
 		}
 		loadTensorRequired(tensorData, metadata, prefix+mapping.AttentionOutKey, &attn.OutWeight)
+
+		// Transpose if PyTorch format
+		if mapping.TransposeWeights {
+			attn.QWeight = Transpose(attn.QWeight)
+			if attn.KWeight != nil {
+				attn.KWeight = Transpose(attn.KWeight)
+			}
+			if attn.VWeight != nil {
+				attn.VWeight = Transpose(attn.VWeight)
+			}
+			attn.OutWeight = Transpose(attn.OutWeight)
+		}
 	}
+
+	return nil
+}
+
+// loadMamba2 loads Mamba2 layer weights
+func loadMamba2(tensorData []byte, metadata map[string]TensorInfo, mapping *WeightMapping, block *GenericBlock, prefix string, config *ModelConfig) error {
+	mamba, ok := block.Attention.(*Mamba2Layer)
+	if !ok {
+		return fmt.Errorf("block does not contain Mamba2Layer")
+	}
+
+	// Load SSM parameters
+	if err := loadTensorRequired(tensorData, metadata, prefix+mapping.Mamba2ALogKey, &mamba.ALog); err != nil {
+		return fmt.Errorf("A_log: %w", err)
+	}
+	if err := loadTensorRequired(tensorData, metadata, prefix+mapping.Mamba2DKey, &mamba.D); err != nil {
+		return fmt.Errorf("D: %w", err)
+	}
+
+	// Load conv weights
+	if err := loadTensorRequired(tensorData, metadata, prefix+mapping.Mamba2Conv1dWeight, &mamba.ConvWeight); err != nil {
+		return fmt.Errorf("conv weight: %w", err)
+	}
+	if err := loadTensorRequired(tensorData, metadata, prefix+mapping.Mamba2Conv1dBias, &mamba.ConvBias); err != nil {
+		return fmt.Errorf("conv bias: %w", err)
+	}
+
+	// Load delta bias
+	if err := loadTensorRequired(tensorData, metadata, prefix+mapping.Mamba2DtBiasKey, &mamba.DeltaBias); err != nil {
+		return fmt.Errorf("dt bias: %w", err)
+	}
+
+	// Load projection weights
+	if err := loadTensorRequired(tensorData, metadata, prefix+mapping.Mamba2InProjKey, &mamba.InProj); err != nil {
+		return fmt.Errorf("in_proj: %w", err)
+	}
+	if err := loadTensorRequired(tensorData, metadata, prefix+mapping.Mamba2NormKey, &mamba.Norm); err != nil {
+		return fmt.Errorf("norm: %w", err)
+	}
+	if err := loadTensorRequired(tensorData, metadata, prefix+mapping.Mamba2OutProjKey, &mamba.OutProj); err != nil {
+		return fmt.Errorf("out_proj: %w", err)
+	}
+
+	// Note: Granite's in_proj contains everything (x, z, delta, B, C)
+	// XProj and DtProj are not separate tensors in Granite
+	// The forward pass extracts them from InProj
 
 	return nil
 }
 
 // loadFFN loads FFN weights
 func loadFFN(tensorData []byte, metadata map[string]TensorInfo, mapping *WeightMapping, block *GenericBlock, prefix string) error {
+	if block.FFN == nil {
+		return nil // Skip if no FFN (shouldn't happen for Granite)
+	}
+
 	loadTensorRequired(tensorData, metadata, prefix+mapping.FFNUpKey, &block.FFN.W1)
 	loadTensorRequired(tensorData, metadata, prefix+mapping.FFNDownKey, &block.FFN.W2)
+
+	// Transpose if PyTorch format [out, in] -> [in, out]
+	if mapping.TransposeWeights {
+		block.FFN.W1 = Transpose(block.FFN.W1)
+		block.FFN.W2 = Transpose(block.FFN.W2)
+	}
 
 	// Biases (optional)
 	loadTensorOptional(tensorData, metadata, prefix+mapping.FFNUpKey+".bias", &block.FFN.B1)
@@ -464,17 +656,60 @@ func LoadModelConfig(configPath string) (*ModelConfig, error) {
 	if v, ok := raw["hidden_size"].(float64); ok {
 		config.Hidden = int(v)
 	}
+	if v, ok := raw["num_hidden_layers"].(float64); ok {
+		config.NumLayers = int(v)
+	}
 	if v, ok := raw["num_layers"].(float64); ok {
 		config.NumLayers = int(v)
 	}
+	if v, ok := raw["num_attention_heads"].(float64); ok {
+		config.NumHeads = int(v)
+	}
 	if v, ok := raw["num_heads"].(float64); ok {
 		config.NumHeads = int(v)
+	}
+	if v, ok := raw["num_key_value_heads"].(float64); ok {
+		config.NumKVHeads = int(v)
 	}
 	if v, ok := raw["num_kv_heads"].(float64); ok {
 		config.NumKVHeads = int(v)
 	}
 	if v, ok := raw["eos_token_id"].(float64); ok {
 		config.EOSTokenID = int(v)
+	}
+	if v, ok := raw["intermediate_size"].(float64); ok {
+		config.FFNDim = int(v)
+	}
+
+	// Granite-specific fields
+	if layerTypes, ok := raw["layer_types"].([]interface{}); ok {
+		config.HybridLayers = make([]string, len(layerTypes))
+		for i, lt := range layerTypes {
+			if layerType, ok := lt.(string); ok {
+				config.HybridLayers[i] = layerType
+			}
+		}
+	}
+	if v, ok := raw["mamba_expand"].(float64); ok {
+		config.Mamba2Expand = int(v)
+	}
+	if v, ok := raw["mamba_d_state"].(float64); ok {
+		config.Mamba2StateSize = int(v)
+	}
+	if v, ok := raw["mamba_n_heads"].(float64); ok {
+		config.Mamba2NumHeads = int(v)
+	}
+	if v, ok := raw["mamba_d_head"].(float64); ok {
+		config.Mamba2HeadDim = int(v)
+	}
+	if v, ok := raw["mamba_n_groups"].(float64); ok {
+		config.Mamba2NGroups = int(v)
+	}
+	if v, ok := raw["mamba_d_conv"].(float64); ok {
+		config.Mamba2ConvKernel = int(v)
+	}
+	if v, ok := raw["mamba_chunk_size"].(float64); ok {
+		config.Mamba2ChunkSize = int(v)
 	}
 
 	return config, nil
@@ -491,6 +726,15 @@ func inferConfigFromJSON(raw map[string]interface{}) *ModelConfig {
 			return NewFalconConfig("7b")
 		case "llama", "LlamaForCausalLM":
 			return NewLlamaConfig("7b")
+		case "granitemoehybrid":
+			// Detect Granite size from hidden_size
+			if hidden, ok := raw["hidden_size"].(float64); ok {
+				if hidden <= 800 {
+					return NewGraniteConfig("350m")
+				}
+				return NewGraniteConfig("1b")
+			}
+			return NewGraniteConfig("350m")
 		}
 	}
 

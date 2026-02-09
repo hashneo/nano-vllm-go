@@ -96,6 +96,7 @@ type ModelConfig struct {
 	Mamba2Expand      int     // Expansion factor (usually 2)
 	Mamba2StateSize   int     // State dimension (usually 128)
 	Mamba2NumHeads    int     // Number of SSM heads (usually 48)
+	Mamba2HeadDim     int     // Head dimension (usually 32)
 	Mamba2NGroups     int     // Number of groups (usually 8)
 	Mamba2ConvKernel  int     // Causal conv kernel size (usually 4)
 	Mamba2DtRank      int     // Delta rank (auto: ceil(hidden/16))
@@ -262,6 +263,7 @@ func NewGraniteConfig(size string) *ModelConfig {
 
 		// Mamba2 specific
 		config.Mamba2NumHeads = 48
+		config.Mamba2HeadDim = 32  // From mamba_d_head in config
 		config.Mamba2NGroups = 8
 		config.Mamba2DtRank = 0 // Auto: ceil(768/16) = 48
 
@@ -270,9 +272,10 @@ func NewGraniteConfig(size string) *ModelConfig {
 		config.NumMamba2Layers = 28
 		config.HybridLayers = make([]string, 32)
 		// Attention at layers 10, 13, 17, 27; rest are Mamba2
+		// Use "mamba" to match Granite's convention
 		attentionLayers := []int{10, 13, 17, 27}
 		for i := 0; i < 32; i++ {
-			config.HybridLayers[i] = "mamba2"
+			config.HybridLayers[i] = "mamba"
 		}
 		for _, idx := range attentionLayers {
 			config.HybridLayers[idx] = "attention"
@@ -295,15 +298,14 @@ func NewGraniteConfig(size string) *ModelConfig {
 		config.Mamba2DtRank = 0 // Auto: ceil(1536/16) = 96
 
 		// Hybrid: 4 attention + 36 Mamba2
+		// Note: This pattern is a placeholder - actual pattern should come from config.json
 		config.NumAttentionLayers = 4
 		config.NumMamba2Layers = 36
 		config.HybridLayers = make([]string, 40)
-		// First 4 are attention, rest are Mamba2
-		for i := 0; i < 4; i++ {
-			config.HybridLayers[i] = "attention"
-		}
-		for i := 4; i < 40; i++ {
-			config.HybridLayers[i] = "mamba2"
+		// Use "mamba" to match Granite's convention
+		// Placeholder pattern - will be overridden by config.json layer_types
+		for i := 0; i < 40; i++ {
+			config.HybridLayers[i] = "mamba"
 		}
 
 	default:
