@@ -258,7 +258,7 @@ purego/tensor/config.go          # Architecture configs
 
 ## References
 
-- **GPT-2**: [Language Models are Unsupervised Multitask Learners](https://d4mucfpksywv.cloudfront.net/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)
+- **GPT-2**: [Language Models are Unsupervised Multitask Learners](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)
 - **MQA**: [Fast Transformer Decoding](https://arxiv.org/abs/1911.02150)
 - **RoPE**: [RoFormer](https://arxiv.org/abs/2104.09864)
 - **GQA**: [GQA: Training Generalized Multi-Query Transformer](https://arxiv.org/abs/2305.13245)

@@ -625,7 +625,7 @@ graph TB
 
 **Implementation**: This project implements GPT-2 architecture
 
-**Paper**: [Language Models are Unsupervised Multitask Learners](https://d4mucfpksywv.cloudfront.net/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)
+**Paper**: [Language Models are Unsupervised Multitask Learners](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)
 
 ---
 
@@ -1487,7 +1487,7 @@ FP32 approx: [-3.105, 2.691]
 - [Transformer Architecture Deep Dive](https://lilianweng.github.io/posts/2023-01-27-the-transformer-family-v2/)
 
 #### GPT Series
-- [GPT-2 Paper](https://d4mucfpksywv.cloudfront.net/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)
+- [GPT-2 Paper](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)
 - [GPT-3 Paper](https://arxiv.org/abs/2005.14165)
 - [InstructGPT / ChatGPT](https://arxiv.org/abs/2203.02155)
 - [GPT-4 Technical Report](https://arxiv.org/abs/2303.08774)
