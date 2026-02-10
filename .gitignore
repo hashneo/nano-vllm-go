@@ -41,4 +41,6 @@ Thumbs.db
 
 # Output files
 output/
-models/gpt2-small/
+
+# Downloaded models (large files)
+models/
