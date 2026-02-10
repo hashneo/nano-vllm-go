@@ -8,35 +8,73 @@ import (
 
 // SamplingParams holds parameters for token sampling
 type SamplingParams struct {
-	Temperature float32
-	TopP        float32 // Nucleus sampling
-	TopK        int     // Top-k sampling
+	Temperature      float32
+	TopP             float32 // Nucleus sampling
+	TopK             int     // Top-k sampling
+	RepetitionPenalty float32 // Penalty for repeating tokens (1.0 = no penalty, >1.0 = penalize)
 }
 
 // DefaultSamplingParams returns default sampling parameters
 func DefaultSamplingParams() *SamplingParams {
 	return &SamplingParams{
-		Temperature: 1.0,
-		TopP:        1.0,
-		TopK:        0, // 0 means disabled
+		Temperature:       1.0,
+		TopP:              1.0,
+		TopK:              0,   // 0 means disabled
+		RepetitionPenalty: 1.2, // Slight penalty to reduce repetition
 	}
 }
 
 // Sample samples a token from logits using the specified parameters
 func Sample(logits []float32, params *SamplingParams) int {
+	return SampleWithHistory(logits, nil, params)
+}
+
+// SampleWithHistory samples a token from logits with repetition penalty based on token history
+func SampleWithHistory(logits []float32, previousTokens []int, params *SamplingParams) int {
 	if params == nil {
 		params = DefaultSamplingParams()
 	}
 
+	// Make a copy of logits to avoid modifying the original
+	logitsCopy := make([]float32, len(logits))
+	copy(logitsCopy, logits)
+
+	// Apply repetition penalty
+	if params.RepetitionPenalty != 1.0 && len(previousTokens) > 0 {
+		// Track which tokens have appeared and how recently
+		tokenCounts := make(map[int]int)
+		for i, token := range previousTokens {
+			// Give more weight to recent tokens
+			weight := 1
+			if i >= len(previousTokens)-10 { // Last 10 tokens get higher weight
+				weight = 3
+			}
+			tokenCounts[token] += weight
+		}
+
+		// Apply penalty to repeated tokens
+		for token, count := range tokenCounts {
+			if token < len(logitsCopy) {
+				// Penalize based on frequency
+				penalty := params.RepetitionPenalty * float32(count)
+				if logitsCopy[token] > 0 {
+					logitsCopy[token] /= penalty
+				} else {
+					logitsCopy[token] *= penalty
+				}
+			}
+		}
+	}
+
 	// Apply temperature
 	if params.Temperature > 0 && params.Temperature != 1.0 {
-		for i := range logits {
-			logits[i] /= params.Temperature
+		for i := range logitsCopy {
+			logitsCopy[i] /= params.Temperature
 		}
 	}
 
 	// Convert logits to probabilities using softmax
-	probs := softmax(logits)
+	probs := softmax(logitsCopy)
 
 	// Apply top-k filtering
 	if params.TopK > 0 && params.TopK < len(probs) {

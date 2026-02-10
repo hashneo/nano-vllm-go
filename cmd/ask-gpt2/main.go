@@ -1,9 +1,9 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 
 	"nano-vllm-go/nanovllm"
@@ -11,17 +11,65 @@ import (
 )
 
 func main() {
+	// Define command-line flags
+	creative := flag.Bool("creative", false, "Use creative mode with higher temperature for storytelling")
+	temperature := flag.Float64("temp", 0.0, "Temperature for sampling (overrides mode defaults)")
+	maxTokens := flag.Int("max-tokens", 0, "Maximum tokens to generate (overrides mode defaults)")
+	repPenalty := flag.Float64("rep-penalty", 0.0, "Repetition penalty (1.0=no penalty, >1.0=penalize repeats)")
+
+	flag.Parse()
+
 	modelDir := "./models/gpt2-small"
 
-	// Get question from command line or use default
+	// Get question from remaining args after flags
 	question := "The capital of France is"
-	if len(os.Args) > 1 {
-		question = os.Args[1]
+	if flag.NArg() > 0 {
+		question = strings.Join(flag.Args(), " ")
 	}
 
-	fmt.Println("GPT-2 Question Answering")
+	// Determine sampling parameters based on mode
+	var temp float64
+	var topP float32
+	var topK int
+	var maxTok int
+	var repPen float32
+
+	if *creative {
+		// Creative mode: higher temperature, nucleus sampling, longer output
+		temp = 0.8
+		topP = 0.95
+		topK = 50
+		maxTok = 100
+		repPen = 1.15 // Moderate penalty for creative text
+	} else {
+		// Factual mode: very low temperature for deterministic, precise answers
+		temp = 0.3  // Low but not too low to avoid complete determinism
+		topP = 1.0  // Disabled for factual mode
+		topK = 5    // Only consider top 5 most likely tokens
+		maxTok = 20
+		repPen = 1.5 // Strong penalty to prevent loops
+	}
+
+	// Allow manual overrides
+	if *temperature > 0 {
+		temp = *temperature
+	}
+	if *maxTokens > 0 {
+		maxTok = *maxTokens
+	}
+	if *repPenalty > 0 {
+		repPen = float32(*repPenalty)
+	}
+
+	mode := "Factual"
+	if *creative {
+		mode = "Creative"
+	}
+
+	fmt.Printf("GPT-2 Question Answering (%s Mode)\n", mode)
 	fmt.Println(strings.Repeat("=", 50))
-	fmt.Printf("Question: %s\n\n", question)
+	fmt.Printf("Question: %s\n", question)
+	fmt.Printf("Temperature: %.2f | Top-P: %.2f | Top-K: %d | Rep-Penalty: %.2f | Max Tokens: %d\n\n", temp, topP, topK, repPen, maxTok)
 
 	// Create config
 	config := nanovllm.NewConfig(
@@ -37,9 +85,8 @@ func main() {
 		log.Fatalf("Failed to create model runner: %v\n", err)
 	}
 
-	// Set sampling parameters (temperature, top-p, top-k)
-	// Use very low temperature for near-greedy (most likely token)
-	modelRunner.SetSamplingParams(0.001, 1.0, 0)
+	// Set sampling parameters (temperature, top-p, top-k, repetition penalty)
+	modelRunner.SetSamplingParamsWithRepetition(float32(temp), topP, topK, repPen)
 
 	// Create proper BPE tokenizer
 	tokenizer, err := purego.NewBPETokenizer(modelDir)
@@ -53,10 +100,9 @@ func main() {
 
 	// Set up sampling parameters
 	// With KV caching, generation is now O(N) - much faster!
-	// Use very low temperature for near-greedy decoding
 	samplingParams := nanovllm.NewSamplingParams(
-		nanovllm.WithTemperature(0.001),
-		nanovllm.WithMaxTokens(20), // Generate more tokens
+		nanovllm.WithTemperature(temp),
+		nanovllm.WithMaxTokens(maxTok),
 	)
 
 	// Generate

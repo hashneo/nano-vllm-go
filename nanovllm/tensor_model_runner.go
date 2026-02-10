@@ -34,9 +34,20 @@ func NewTensorModelRunner(modelDir string) (*TensorModelRunner, error) {
 // SetSamplingParams sets default sampling parameters
 func (m *TensorModelRunner) SetSamplingParams(temperature float32, topP float32, topK int) {
 	m.defaultSampling = &tensor.SamplingParams{
-		Temperature: temperature,
-		TopP:        topP,
-		TopK:        topK,
+		Temperature:       temperature,
+		TopP:              topP,
+		TopK:              topK,
+		RepetitionPenalty: 1.2, // Default repetition penalty
+	}
+}
+
+// SetSamplingParamsWithRepetition sets default sampling parameters including repetition penalty
+func (m *TensorModelRunner) SetSamplingParamsWithRepetition(temperature float32, topP float32, topK int, repetitionPenalty float32) {
+	m.defaultSampling = &tensor.SamplingParams{
+		Temperature:       temperature,
+		TopP:              topP,
+		TopK:              topK,
+		RepetitionPenalty: repetitionPenalty,
 	}
 }
 
@@ -77,8 +88,9 @@ func (m *TensorModelRunner) Run(seqs []*Sequence, isPrefill bool) ([]int, error)
 		// Get logits for last token
 		lastTokenLogits := m.model.GetLogitsForLastToken(logits)
 
-		// Sample using temperature/top-p/top-k
-		tokenIDs[i] = tensor.Sample(lastTokenLogits, m.defaultSampling)
+		// Sample using temperature/top-p/top-k with repetition penalty
+		// Pass the token history to apply repetition penalty
+		tokenIDs[i] = tensor.SampleWithHistory(lastTokenLogits, seq.TokenIDs, m.defaultSampling)
 	}
 
 	return tokenIDs, nil
