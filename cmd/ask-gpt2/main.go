@@ -16,10 +16,22 @@ func main() {
 	temperature := flag.Float64("temp", 0.0, "Temperature for sampling (overrides mode defaults)")
 	maxTokens := flag.Int("max-tokens", 0, "Maximum tokens to generate (overrides mode defaults)")
 	repPenalty := flag.Float64("rep-penalty", 0.0, "Repetition penalty (1.0=no penalty, >1.0=penalize repeats)")
+	modelSize := flag.String("model", "small", "Model size: small (124M), medium (355M), large (774M), xl (1.5B)")
 
 	flag.Parse()
 
-	modelDir := "./models/gpt2-small"
+	// Map model size to directory
+	modelDirs := map[string]string{
+		"small":  "./models/gpt2-small",
+		"medium": "./models/gpt2-medium",
+		"large":  "./models/gpt2-large",
+		"xl":     "./models/gpt2-xl",
+	}
+
+	modelDir, ok := modelDirs[*modelSize]
+	if !ok {
+		log.Fatalf("Invalid model size: %s. Choose from: small, medium, large, xl\n", *modelSize)
+	}
 
 	// Get question from remaining args after flags
 	question := "The capital of France is"

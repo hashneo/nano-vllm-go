@@ -496,7 +496,12 @@ func loadTensorOptional(data []byte, metadata map[string]TensorInfo, name string
 func loadTensorFromData(data []byte, metadata map[string]TensorInfo, name string, target **Tensor) error {
 	info, ok := metadata[name]
 	if !ok {
-		return fmt.Errorf("tensor not found: %s", name)
+		// Try with "transformer." prefix (for newer HF models)
+		altName := "transformer." + name
+		info, ok = metadata[altName]
+		if !ok {
+			return fmt.Errorf("tensor not found: %s (also tried: %s)", name, altName)
+		}
 	}
 
 	// Extract tensor data
@@ -685,14 +690,26 @@ func LoadModelConfig(configPath string) (*ModelConfig, error) {
 	if v, ok := raw["vocab_size"].(float64); ok {
 		config.VocabSize = int(v)
 	}
+	// GPT-2 uses "n_embd" instead of "hidden_size"
+	if v, ok := raw["n_embd"].(float64); ok {
+		config.Hidden = int(v)
+	}
 	if v, ok := raw["hidden_size"].(float64); ok {
 		config.Hidden = int(v)
+	}
+	// GPT-2 uses "n_layer" instead of "num_hidden_layers"
+	if v, ok := raw["n_layer"].(float64); ok {
+		config.NumLayers = int(v)
 	}
 	if v, ok := raw["num_hidden_layers"].(float64); ok {
 		config.NumLayers = int(v)
 	}
 	if v, ok := raw["num_layers"].(float64); ok {
 		config.NumLayers = int(v)
+	}
+	// GPT-2 uses "n_head" instead of "num_attention_heads"
+	if v, ok := raw["n_head"].(float64); ok {
+		config.NumHeads = int(v)
 	}
 	if v, ok := raw["num_attention_heads"].(float64); ok {
 		config.NumHeads = int(v)
@@ -709,8 +726,16 @@ func LoadModelConfig(configPath string) (*ModelConfig, error) {
 	if v, ok := raw["eos_token_id"].(float64); ok {
 		config.EOSTokenID = int(v)
 	}
+	// GPT-2 uses "n_inner" for FFN dimension (can be null, defaults to 4*hidden)
+	if v, ok := raw["n_inner"].(float64); ok {
+		config.FFNDim = int(v)
+	}
 	if v, ok := raw["intermediate_size"].(float64); ok {
 		config.FFNDim = int(v)
+	}
+	// If FFNDim is still 0, default to 4 * hidden_size (GPT-2 convention)
+	if config.FFNDim == 0 && config.Hidden > 0 {
+		config.FFNDim = 4 * config.Hidden
 	}
 	if v, ok := raw["tie_word_embeddings"].(bool); ok {
 		config.TiedEmbedding = v

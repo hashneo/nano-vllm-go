@@ -47,6 +47,7 @@ func LoadGPT2FromSafetensors(path string, config *GPT2Config) (*GPT2Model, error
 
 	// Load transformer blocks
 	for i := 0; i < config.NumLayers; i++ {
+		// Try both naming conventions: "h.0" and "transformer.h.0"
 		prefix := fmt.Sprintf("h.%d", i)
 		block := model.Blocks[i]
 
@@ -90,11 +91,16 @@ func LoadGPT2FromSafetensors(path string, config *GPT2Config) (*GPT2Model, error
 func loadTensor(data []byte, metadata map[string]TensorInfo, name string, target **Tensor) error {
 	info, ok := metadata[name]
 	if !ok {
-		// Try alternative names
-		altName := strings.ReplaceAll(name, ".", "_")
+		// Try with "transformer." prefix
+		altName := "transformer." + name
 		info, ok = metadata[altName]
 		if !ok {
-			return fmt.Errorf("tensor not found: %s", name)
+			// Try replacing dots with underscores
+			altName = strings.ReplaceAll(name, ".", "_")
+			info, ok = metadata[altName]
+			if !ok {
+				return fmt.Errorf("tensor not found: %s (tried: %s, transformer.%s)", name, altName, name)
+			}
 		}
 	}
 
