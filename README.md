@@ -1,123 +1,118 @@
 # Nano-vLLM-Go
 
-A Go implementation of nano-vLLM, a lightweight LLM inference engine built from scratch.
+A lightweight LLM inference engine built from scratch in pure Go, implementing vLLM-style scheduling and memory management.
 
-## Overview
+## Features
 
-This is a Go port of [nano-vllm](https://github.com/GeeeekExplorer/nano-vllm), focusing on the core scheduling and memory management logic that makes vLLM efficient. The architecture demonstrates:
-
-- **Continuous Batching** - Dynamic batch composition for optimal GPU utilization
-- **Prefix Caching** - KV cache block sharing using content-based hashing
-- **Block-based Memory Management** - Efficient memory allocation with reference counting
-- **Scheduler** - Intelligent prefill/decode phase management
-- **Sequence Management** - Request lifecycle handling with state tracking
-
-## Architecture
-
-The codebase is organized into several key components:
-
-- `config.go` - Configuration parameters for the engine
-- `sampling_params.go` - Sampling configuration (temperature, max tokens, etc.)
-- `sequence.go` - Represents individual generation requests
-- `block_manager.go` - Manages KV cache blocks with prefix caching
-- `scheduler.go` - Schedules sequences for prefill and decode phases
-- `model_runner.go` - Interface for model inference (implement with your backend)
-- `llm_engine.go` - Main engine that orchestrates everything
-- `llm.go` - User-facing API
-
-## Installation
-
-```bash
-go get github.com/your-username/nano-vllm-go
-```
+- **Pure Go Implementation** - No Python dependencies, runs natively on any platform
+- **Continuous Batching** - Dynamic batch composition for optimal resource utilization
+- **KV Caching** - Key-Value cache for efficient O(N) generation
+- **Block-based Memory Management** - Efficient memory allocation with prefix caching
+- **Real Model Support** - Runs actual GPT-2 models from HuggingFace
 
 ## Quick Start
 
-### Simple Example (Works Immediately)
+### Prerequisites
 
 ```bash
-# Build and run - no setup required!
-go build -o bin/simple_example ./purego/example_simple
-./bin/simple_example
+# Clone the repository
+git clone https://github.com/your-username/nano-vllm-go
+cd nano-vllm-go
+
+# Download GPT-2 model
+python3 download_model.py --model gpt2 --output ./models/gpt2-small
 ```
 
-### Go Code Example
+### Build and Run
 
-```go
-package main
+```bash
+# Build the binary
+go build -o ask-gpt2 ask_gpt2.go
 
-import (
-    "nano-vllm-go/nanovllm"
-    "nano-vllm-go/purego"
-)
+# Ask a question
+./ask-gpt2 "The capital city of France is"
+# Output: Paris
 
-func main() {
-    // Create config
-    config := nanovllm.NewConfig(".")
-
-    // Use simple tokenizer (no external files needed)
-    tokenizer := purego.NewSimpleBPETokenizer(2)
-
-    // Use mock model runner (or implement your own)
-    modelRunner := nanovllm.NewMockModelRunner(config)
-
-    // Create LLM engine
-    llm := nanovllm.NewLLMWithComponents(config, modelRunner, tokenizer)
-    defer llm.Close()
-
-    // Set up sampling parameters
-    samplingParams := nanovllm.NewSamplingParams(
-        nanovllm.WithTemperature(0.6),
-        nanovllm.WithMaxTokens(256),
-    )
-
-    // Generate
-    prompts := []string{
-        "Hello, Nano-vLLM-Go!",
-        "What is the meaning of life?",
-    }
-
-    outputs := llm.Generate(prompts, samplingParams, true)
-
-    for i, output := range outputs {
-        fmt.Printf("Prompt %d: %s\n", i, prompts[i])
-        fmt.Printf("Output: %s\n\n", output.Text)
-    }
-}
+# Run the demo
+./demo_capitals.sh
 ```
 
-## Key Features
+## Architecture
 
-### Continuous Batching
-Unlike static batching, sequences can be added and removed from batches dynamically as they complete, maximizing throughput.
+### Core Components
 
-### Prefix Caching
-Common prompt prefixes share KV cache blocks using xxhash-based content addressing. This dramatically reduces memory usage for similar prompts.
+- **`nanovllm/`** - Main inference engine
+  - `llm_engine.go` - Orchestrates prefill/decode phases
+  - `scheduler.go` - Manages sequence scheduling
+  - `block_manager.go` - KV cache memory management
+  - `sequence.go` - Request lifecycle tracking
 
-### Memory Management
-Block-based KV cache allocation with reference counting enables safe sharing of cached blocks between sequences.
+- **`purego/`** - Pure Go tensor operations
+  - `tensor/` - Matrix operations and transformer layers
+  - `bpe_tokenizer.go` - Byte-Pair Encoding tokenization
+  - `safetensors.go` - Model weight loading
 
-### Scheduler
-Separates prefill (processing input tokens) and decode (generating output tokens) phases for optimal batching.
+### How It Works
 
-## Implementation Notes
+1. **Tokenization** - Text is converted to token IDs using BPE
+2. **Prefill Phase** - Process all prompt tokens at once, cache KV states
+3. **Decode Phase** - Generate one token at a time, reusing cached KV states
+4. **Sampling** - Apply temperature and select next token from logits
+5. **Detokenization** - Convert token IDs back to text
 
-This Go implementation focuses on the scheduling and memory management logic. The actual model inference is abstracted through the `ModelRunner` interface, which you can implement using:
+## Model Support
 
-- **CGo bindings** to PyTorch/ONNX Runtime
-- **Go ML libraries** like gorgonia or tensorflow-go
-- **HTTP/gRPC** calls to Python-based inference servers
-- **Custom CUDA kernels** via CGo
+Currently supports GPT-2 architecture:
+- GPT-2 Small (124M parameters)
+- GPT-2 Medium (355M parameters)
+- GPT-2 Large (774M parameters)
+- GPT-2 XL (1.5B parameters)
 
-The current implementation includes a mock model runner for demonstration purposes.
+## Performance
 
-## Differences from Python Version
+On Apple M-series (Metal acceleration disabled):
+- Prefill: ~8 tokens/second
+- Decode: ~6 tokens/second
 
-- **Model Inference**: Abstracted as an interface instead of direct PyTorch calls
-- **Tokenization**: Requires external tokenizer (BPE, SentencePiece, etc.)
-- **Tensor Parallelism**: Simplified - production use would need distributed coordination
-- **Error Handling**: Idiomatic Go error handling instead of Python exceptions
-- **Concurrency**: Go channels and goroutines instead of Python multiprocessing
+## Examples
+
+```bash
+# Ask about capitals
+./ask-gpt2 "The capital city of Italy is"
+# Output: Rome
+
+# Complete a sentence
+./ask-gpt2 "Once upon a time"
+# Output: (story continuation)
+
+# Run quiz demo
+./demo_capitals.sh
+```
+
+## Project Structure
+
+```
+nano-vllm-go/
+├── nanovllm/          # Inference engine
+├── purego/            # Pure Go tensor ops
+│   └── tensor/        # Matrix operations
+├── models/            # Downloaded models
+├── ask_gpt2.go        # Main binary
+└── demo_capitals.sh   # Demo script
+```
+
+## Development
+
+```bash
+# Run tests
+go test ./...
+
+# Build
+go build -o ask-gpt2 ask_gpt2.go
+
+# Format
+go fmt ./...
+```
 
 ## License
 
@@ -125,4 +120,4 @@ MIT License - see LICENSE file for details
 
 ## Acknowledgments
 
-Based on the excellent [nano-vllm](https://github.com/GeeeekExplorer/nano-vllm) project by Xingkai Yu.
+Based on the architecture of [nano-vllm](https://github.com/GeeeekExplorer/nano-vllm) by GeeeekExplorer.

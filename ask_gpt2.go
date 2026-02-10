@@ -31,7 +31,7 @@ func main() {
 		nanovllm.WithMaxNumBatchedTokens(512),
 	)
 
-	// Create real model runner
+	// Create model runner
 	modelRunner, err := nanovllm.NewTensorModelRunner(modelDir)
 	if err != nil {
 		log.Fatalf("Failed to create model runner: %v\n", err)
