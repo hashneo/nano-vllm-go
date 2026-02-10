@@ -1,7 +1,5 @@
 package tensor
 
-import "fmt"
-
 // TransformerModel is a generic transformer that adapts to different architectures
 type TransformerModel struct {
 	Config *ModelConfig
