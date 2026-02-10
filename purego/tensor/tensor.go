@@ -244,6 +244,36 @@ func LayerNorm(t *Tensor, weight, bias *Tensor, eps float32) *Tensor {
 	return result
 }
 
+// ConcatenateLastDim concatenates two tensors along their last dimension
+// For 2D tensors [M, N1] + [M, N2] -> [M, N1+N2]
+func ConcatenateLastDim(t1, t2 *Tensor) *Tensor {
+	if len(t1.Shape) != 2 || len(t2.Shape) != 2 {
+		panic(fmt.Sprintf("ConcatenateLastDim only supports 2D tensors, got shapes %v and %v", t1.Shape, t2.Shape))
+	}
+	if t1.Shape[0] != t2.Shape[0] {
+		panic(fmt.Sprintf("ConcatenateLastDim: first dimension mismatch %d vs %d", t1.Shape[0], t2.Shape[0]))
+	}
+
+	rows := t1.Shape[0]
+	cols1 := t1.Shape[1]
+	cols2 := t2.Shape[1]
+	totalCols := cols1 + cols2
+
+	result := NewTensor(rows, totalCols)
+	for i := 0; i < rows; i++ {
+		// Copy from t1
+		for j := 0; j < cols1; j++ {
+			result.Data[i*totalCols+j] = t1.Data[i*cols1+j]
+		}
+		// Copy from t2
+		for j := 0; j < cols2; j++ {
+			result.Data[i*totalCols+cols1+j] = t2.Data[i*cols2+j]
+		}
+	}
+
+	return result
+}
+
 // Concatenate concatenates two tensors along a specified dimension
 func Concatenate(t1, t2 *Tensor, dim int) *Tensor {
 	// For now, only support sequence dimension (dim 2 for [batch, heads, seq, head_dim])

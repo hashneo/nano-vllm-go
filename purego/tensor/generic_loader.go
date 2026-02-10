@@ -104,6 +104,7 @@ func GetLlamaMapping() *WeightMapping {
 		FFNNormKey:        ".post_attention_layernorm.weight",
 		FinalNormKey:      "model.norm.weight",
 		QKVCombined:       false, // Llama has separate Q, K, V
+		TransposeWeights:  true,  // Llama uses PyTorch format [out, in], needs transposing to [in, out]
 	}
 }
 
@@ -206,6 +207,10 @@ func LoadModel(modelPath string, config *ModelConfig) (*TransformerModel, error)
 	// Load LM head
 	if mapping.LMHeadKey != "" && !config.TiedEmbedding {
 		loadTensorOptional(tensorData, metadata, mapping.LMHeadKey, &model.LMHead)
+		// Transpose if PyTorch format
+		if model.LMHead != nil && mapping.TransposeWeights {
+			model.LMHead = Transpose(model.LMHead)
+		}
 	}
 
 	// If tied, use transposed token embedding
@@ -451,12 +456,43 @@ func loadFFN(tensorData []byte, metadata map[string]TensorInfo, mapping *WeightM
 		return nil // Skip if no FFN (shouldn't happen for Granite)
 	}
 
-	loadTensorRequired(tensorData, metadata, prefix+mapping.FFNUpKey, &block.FFN.W1)
-	loadTensorRequired(tensorData, metadata, prefix+mapping.FFNDownKey, &block.FFN.W2)
+	// For SwiGLU with separate gate/up projections (Llama/Mistral)
+	if block.FFN.UseSwiGLU {
+		// Try loading separate gate and up projections
+		var gateWeight, upWeight *Tensor
+		gateKey := prefix + mapping.FFNUpKey                    // gate_proj
+		upKey := strings.Replace(gateKey, "gate_proj", "up_proj", 1) // up_proj
 
+		errGate := loadTensorFromData(tensorData, metadata, gateKey, &gateWeight)
+		errUp := loadTensorFromData(tensorData, metadata, upKey, &upWeight)
+
+		if errGate == nil && errUp == nil {
+			// Both found - concatenate them
+			// Transpose first if PyTorch format
+			if mapping.TransposeWeights {
+				gateWeight = Transpose(gateWeight)
+				upWeight = Transpose(upWeight)
+			}
+			// Concatenate along last dimension: [hidden, ffn_dim] + [hidden, ffn_dim] -> [hidden, 2*ffn_dim]
+			block.FFN.W1 = ConcatenateLastDim(gateWeight, upWeight)
+		} else {
+			// Fall back to single weight (combined gate+up)
+			loadTensorRequired(tensorData, metadata, prefix+mapping.FFNUpKey, &block.FFN.W1)
+			if mapping.TransposeWeights {
+				block.FFN.W1 = Transpose(block.FFN.W1)
+			}
+		}
+	} else {
+		// Standard FFN
+		loadTensorRequired(tensorData, metadata, prefix+mapping.FFNUpKey, &block.FFN.W1)
+		if mapping.TransposeWeights {
+			block.FFN.W1 = Transpose(block.FFN.W1)
+		}
+	}
+
+	loadTensorRequired(tensorData, metadata, prefix+mapping.FFNDownKey, &block.FFN.W2)
 	// Transpose if PyTorch format [out, in] -> [in, out]
 	if mapping.TransposeWeights {
-		block.FFN.W1 = Transpose(block.FFN.W1)
 		block.FFN.W2 = Transpose(block.FFN.W2)
 	}
 
@@ -723,8 +759,30 @@ func LoadModelConfig(configPath string) (*ModelConfig, error) {
 	if v, ok := raw["num_kv_heads"].(float64); ok {
 		config.NumKVHeads = int(v)
 	}
+	if v, ok := raw["head_dim"].(float64); ok {
+		config.HeadDim = int(v)
+	}
+	// If HeadDim not specified, calculate from hidden / num_heads
+	if config.HeadDim == 0 && config.Hidden > 0 && config.NumHeads > 0 {
+		config.HeadDim = config.Hidden / config.NumHeads
+	}
 	if v, ok := raw["eos_token_id"].(float64); ok {
 		config.EOSTokenID = int(v)
+	}
+	if v, ok := raw["bos_token_id"].(float64); ok {
+		config.BOSTokenID = int(v)
+	}
+	if v, ok := raw["pad_token_id"].(float64); ok {
+		config.PadTokenID = int(v)
+	}
+	if v, ok := raw["rope_theta"].(float64); ok {
+		config.RoPEBase = v
+	}
+	if v, ok := raw["rms_norm_eps"].(float64); ok {
+		config.NormEps = float32(v)
+	}
+	if v, ok := raw["layer_norm_epsilon"].(float64); ok {
+		config.NormEps = float32(v)
 	}
 	// GPT-2 uses "n_inner" for FFN dimension (can be null, defaults to 4*hidden)
 	if v, ok := raw["n_inner"].(float64); ok {
