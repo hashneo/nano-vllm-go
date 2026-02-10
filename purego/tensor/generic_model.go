@@ -211,15 +211,57 @@ func (block *GenericBlock) forwardParallel(x *Tensor) *Tensor {
 
 // Forward performs a forward pass through the model
 func (m *TransformerModel) Forward(tokenIDs []int) *Tensor {
+	logits, _ := m.ForwardWithCache(tokenIDs, nil, 0)
+	return logits
+}
+
+// ForwardWithCache performs a forward pass with KV caching support
+// posOffset is the position offset for positional embeddings when using cache
+// Returns: (logits, updated_kv_cache)
+func (m *TransformerModel) ForwardWithCache(tokenIDs []int, kvCache *KVCache, posOffset int) (*Tensor, *KVCache) {
 	batchSize := 1
 	seqLen := len(tokenIDs)
 
-	// 1. Embeddings
-	x := m.embed(tokenIDs)
+	// Create KV cache if not provided
+	if kvCache == nil {
+		kvCache = NewKVCache(m.Config.NumLayers)
+	}
 
-	// 2. Apply transformer blocks
-	for _, block := range m.Blocks {
-		x = block.Forward(x)
+	// 1. Embeddings (with position offset for cached generation)
+	x := m.embedWithOffset(tokenIDs, posOffset)
+
+	// 2. Apply transformer blocks with KV caching
+	for i, block := range m.Blocks {
+		// Check if this block supports KV caching (has attention)
+		if mha, ok := block.Attention.(*MultiHeadAttention); ok {
+			// Get cached K,V for this layer
+			kCache, vCache := kvCache.GetLayer(i)
+
+			// Forward with cache
+			var newK, newV *Tensor
+			residual := x
+			if block.AttnLN != nil {
+				x = block.AttnLN.Forward(x)
+			}
+			x, newK, newV = mha.ForwardWithCache(x, kCache, vCache)
+			x = Add(x, residual)
+
+			// Update cache
+			kvCache.SetLayer(i, newK, newV)
+
+			// FFN
+			if block.FFN != nil {
+				residual = x
+				if block.FFNLN != nil {
+					x = block.FFNLN.Forward(x)
+				}
+				x = block.FFN.Forward(x)
+				x = Add(x, residual)
+			}
+		} else {
+			// Non-attention blocks (e.g., Mamba2) don't use KV cache
+			x = block.Forward(x)
+		}
 	}
 
 	// 3. Final layer norm
@@ -243,11 +285,16 @@ func (m *TransformerModel) Forward(tokenIDs []int) *Tensor {
 		}
 	}
 
-	return logits
+	return logits, kvCache
 }
 
 // embed creates embeddings based on position type
 func (m *TransformerModel) embed(tokenIDs []int) *Tensor {
+	return m.embedWithOffset(tokenIDs, 0)
+}
+
+// embedWithOffset creates embeddings with position offset for KV caching
+func (m *TransformerModel) embedWithOffset(tokenIDs []int, posOffset int) *Tensor {
 	seqLen := len(tokenIDs)
 	hidden := m.Config.Hidden
 
@@ -266,8 +313,11 @@ func (m *TransformerModel) embed(tokenIDs []int) *Tensor {
 
 		// Add position embedding if using learned positions
 		if m.Config.PositionType == PositionLearned && m.PosEmbedding != nil {
-			for j := 0; j < hidden; j++ {
-				result.Data[i*hidden+j] += m.PosEmbedding.Data[i*hidden+j]
+			actualPos := posOffset + i
+			if actualPos < m.Config.MaxSeqLen {
+				for j := 0; j < hidden; j++ {
+					result.Data[i*hidden+j] += m.PosEmbedding.Data[actualPos*hidden+j]
+				}
 			}
 		}
 		// Note: RoPE is applied in attention layer, not here

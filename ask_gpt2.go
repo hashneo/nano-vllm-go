@@ -37,6 +37,9 @@ func main() {
 		log.Fatalf("Failed to create model runner: %v\n", err)
 	}
 
+	// Set sampling parameters (temperature, top-p, top-k)
+	modelRunner.SetSamplingParams(0.8, 0.95, 50)
+
 	// Create GPT-2 tokenizer
 	tokenizer, err := purego.NewGPT2Tokenizer(modelDir)
 	if err != nil {
@@ -48,10 +51,10 @@ func main() {
 	defer llm.Close()
 
 	// Set up sampling parameters
-	// Note: Keep max_tokens low (5-10) because generation is O(N²) without KV caching
+	// With KV caching, generation is now O(N) - much faster!
 	samplingParams := nanovllm.NewSamplingParams(
-		nanovllm.WithTemperature(0.7),
-		nanovllm.WithMaxTokens(5), // Generate 5 tokens (fast for testing)
+		nanovllm.WithTemperature(0.8),
+		nanovllm.WithMaxTokens(30), // Generate 30 tokens (fast with KV cache!)
 	)
 
 	// Generate
@@ -65,5 +68,22 @@ func main() {
 	fmt.Println("\n" + strings.Repeat("=", 50))
 	fmt.Printf("Answer: %s\n", outputs[0].Text)
 	fmt.Printf("\nGenerated %d tokens\n", len(outputs[0].TokenIDs))
+
+	// Check for repetitive pattern
+	if len(outputs[0].TokenIDs) > 3 {
+		allSame := true
+		firstID := outputs[0].TokenIDs[0]
+		for _, id := range outputs[0].TokenIDs[1:] {
+			if id != firstID {
+				allSame = false
+				break
+			}
+		}
+		if allSame {
+			fmt.Println("⚠️  WARNING: All tokens are identical!")
+		} else {
+			fmt.Println("✓ Tokens are varied - sampling is working!")
+		}
+	}
 	fmt.Println(strings.Repeat("=", 50))
 }

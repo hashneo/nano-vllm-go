@@ -2,13 +2,19 @@ package nanovllm
 
 import (
 	"fmt"
+	"sync"
 
 	"nano-vllm-go/purego/tensor"
 )
 
 // TensorModelRunner implements ModelRunner using the purego tensor model
 type TensorModelRunner struct {
-	model *tensor.TransformerModel
+	model    *tensor.TransformerModel
+	kvCaches map[int64]*tensor.KVCache // Per-sequence KV cache
+	mu       sync.Mutex                // Protects kvCaches map
+
+	// Sampling parameters (can be overridden per request)
+	defaultSampling *tensor.SamplingParams
 }
 
 // NewTensorModelRunner creates a new tensor model runner
@@ -19,8 +25,19 @@ func NewTensorModelRunner(modelDir string) (*TensorModelRunner, error) {
 	}
 
 	return &TensorModelRunner{
-		model: model,
+		model:           model,
+		kvCaches:        make(map[int64]*tensor.KVCache),
+		defaultSampling: tensor.DefaultSamplingParams(),
 	}, nil
+}
+
+// SetSamplingParams sets default sampling parameters
+func (m *TensorModelRunner) SetSamplingParams(temperature float32, topP float32, topK int) {
+	m.defaultSampling = &tensor.SamplingParams{
+		Temperature: temperature,
+		TopP:        topP,
+		TopK:        topK,
+	}
 }
 
 // Run executes model inference on the given sequences
@@ -28,33 +45,61 @@ func (m *TensorModelRunner) Run(seqs []*Sequence, isPrefill bool) ([]int, error)
 	tokenIDs := make([]int, len(seqs))
 
 	for i, seq := range seqs {
-		// Get all token IDs for this sequence
-		allTokens := seq.TokenIDs
+		m.mu.Lock()
 
-		// Run forward pass
-		logits := m.model.Forward(allTokens)
+		// Get or create KV cache for this sequence
+		kvCache, exists := m.kvCaches[seq.SeqID]
+		if !exists || isPrefill {
+			// Create new cache for prefill
+			kvCache = tensor.NewKVCache(m.model.Config.NumLayers)
+			m.kvCaches[seq.SeqID] = kvCache
+		}
+		m.mu.Unlock()
+
+		var logits *tensor.Tensor
+		var newCache *tensor.KVCache
+
+		if isPrefill {
+			// Prefill: process all tokens at once
+			logits, newCache = m.model.ForwardWithCache(seq.TokenIDs, nil, 0)
+		} else {
+			// Decode: only process the last token
+			lastToken := []int{seq.TokenIDs[len(seq.TokenIDs)-1]}
+			posOffset := len(seq.TokenIDs) - 1
+			logits, newCache = m.model.ForwardWithCache(lastToken, kvCache, posOffset)
+		}
+
+		// Update cache
+		m.mu.Lock()
+		m.kvCaches[seq.SeqID] = newCache
+		m.mu.Unlock()
 
 		// Get logits for last token
 		lastTokenLogits := m.model.GetLogitsForLastToken(logits)
 
-		// Find token with highest logit (greedy sampling for now)
-		maxIdx := 0
-		maxVal := lastTokenLogits[0]
-		for j := 1; j < len(lastTokenLogits); j++ {
-			if lastTokenLogits[j] > maxVal {
-				maxVal = lastTokenLogits[j]
-				maxIdx = j
-			}
-		}
-
-		tokenIDs[i] = maxIdx
+		// Sample using temperature/top-p/top-k
+		tokenIDs[i] = tensor.Sample(lastTokenLogits, m.defaultSampling)
 	}
 
 	return tokenIDs, nil
 }
 
+// ClearCache removes KV cache for a specific sequence
+func (m *TensorModelRunner) ClearCache(seqID int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.kvCaches, seqID)
+}
+
+// ClearAllCaches removes all KV caches
+func (m *TensorModelRunner) ClearAllCaches() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.kvCaches = make(map[int64]*tensor.KVCache)
+}
+
 // Close cleans up resources
 func (m *TensorModelRunner) Close() error {
-	// No resources to clean up currently
+	m.ClearAllCaches()
 	return nil
 }

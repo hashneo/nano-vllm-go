@@ -244,6 +244,47 @@ func LayerNorm(t *Tensor, weight, bias *Tensor, eps float32) *Tensor {
 	return result
 }
 
+// Concatenate concatenates two tensors along a specified dimension
+func Concatenate(t1, t2 *Tensor, dim int) *Tensor {
+	// For now, only support sequence dimension (dim 2 for [batch, heads, seq, head_dim])
+	if dim != 2 || len(t1.Shape) != 4 || len(t2.Shape) != 4 {
+		panic("Concatenate only supports dim=2 for 4D tensors")
+	}
+
+	batch := t1.Shape[0]
+	heads := t1.Shape[1]
+	seq1 := t1.Shape[2]
+	seq2 := t2.Shape[2]
+	headDim := t1.Shape[3]
+
+	// Create result tensor with combined sequence length
+	result := NewTensor(batch, heads, seq1+seq2, headDim)
+
+	// Copy data
+	for b := 0; b < batch; b++ {
+		for h := 0; h < heads; h++ {
+			// Copy from t1
+			for s := 0; s < seq1; s++ {
+				for d := 0; d < headDim; d++ {
+					srcIdx := ((b*heads+h)*seq1+s)*headDim + d
+					dstIdx := ((b*heads+h)*(seq1+seq2)+s)*headDim + d
+					result.Data[dstIdx] = t1.Data[srcIdx]
+				}
+			}
+			// Copy from t2
+			for s := 0; s < seq2; s++ {
+				for d := 0; d < headDim; d++ {
+					srcIdx := ((b*heads+h)*seq2+s)*headDim + d
+					dstIdx := ((b*heads+h)*(seq1+seq2)+(seq1+s))*headDim + d
+					result.Data[dstIdx] = t2.Data[srcIdx]
+				}
+			}
+		}
+	}
+
+	return result
+}
+
 // Reshape returns a new tensor with different shape (same data)
 func (t *Tensor) Reshape(shape ...int) *Tensor {
 	newSize := 1

@@ -25,6 +25,13 @@ type MultiHeadAttention struct {
 
 // Forward performs multi-head attention
 func (mha *MultiHeadAttention) Forward(x *Tensor) *Tensor {
+	output, _, _ := mha.ForwardWithCache(x, nil, nil)
+	return output
+}
+
+// ForwardWithCache performs multi-head attention with optional KV caching
+// Returns: (output, new_k_cache, new_v_cache)
+func (mha *MultiHeadAttention) ForwardWithCache(x *Tensor, kCache, vCache *Tensor) (*Tensor, *Tensor, *Tensor) {
 	batchSize := x.Shape[0]
 	seqLen := x.Shape[1]
 
@@ -38,7 +45,13 @@ func (mha *MultiHeadAttention) Forward(x *Tensor) *Tensor {
 	K = mha.splitHeads(K, batchSize, seqLen)
 	V = mha.splitHeads(V, batchSize, seqLen)
 
-	// Scaled dot-product attention
+	// If we have cache, concatenate along sequence dimension (dim=2)
+	if kCache != nil && vCache != nil {
+		K = Concatenate(kCache, K, 2)
+		V = Concatenate(vCache, V, 2)
+	}
+
+	// Scaled dot-product attention (Q attends to full K,V including cache)
 	output := mha.scaledDotProductAttention(Q, K, V)
 
 	// Reshape back to [batch, seq, hidden]
@@ -47,7 +60,7 @@ func (mha *MultiHeadAttention) Forward(x *Tensor) *Tensor {
 	// Output projection
 	output = mha.project(output, mha.OutWeight, mha.OutBias)
 
-	return output
+	return output, K, V
 }
 
 func (mha *MultiHeadAttention) project(x, weight, bias *Tensor) *Tensor {
