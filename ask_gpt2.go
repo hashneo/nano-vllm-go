@@ -38,8 +38,8 @@ func main() {
 	}
 
 	// Set sampling parameters (temperature, top-p, top-k)
-	// Use temperature=0 for greedy (most likely token)
-	modelRunner.SetSamplingParams(0.01, 1.0, 0)
+	// Use very low temperature for near-greedy (most likely token)
+	modelRunner.SetSamplingParams(0.001, 1.0, 0)
 
 	// Create proper BPE tokenizer
 	tokenizer, err := purego.NewBPETokenizer(modelDir)
@@ -53,10 +53,10 @@ func main() {
 
 	// Set up sampling parameters
 	// With KV caching, generation is now O(N) - much faster!
-	// Use greedy decoding (temp near 0) for factual answers
+	// Use very low temperature for near-greedy decoding
 	samplingParams := nanovllm.NewSamplingParams(
-		nanovllm.WithTemperature(0.01),
-		nanovllm.WithMaxTokens(10), // Generate 10 tokens for testing
+		nanovllm.WithTemperature(0.001),
+		nanovllm.WithMaxTokens(20), // Generate more tokens
 	)
 
 	// Generate

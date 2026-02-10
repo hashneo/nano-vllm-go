@@ -544,19 +544,29 @@ func loadTensorFromData(data []byte, metadata map[string]TensorInfo, name string
 // splitGPT2QKV splits GPT-2's combined QKV weight
 func splitGPT2QKV(qkvWeight *Tensor, config *ModelConfig) (*Tensor, *Tensor, *Tensor) {
 	// GPT-2 format: [hidden, 3*hidden]
+	// Q/K/V are split along columns (dim 1), not rows
+	// Column layout: [Q_cols: 0-767, K_cols: 768-1535, V_cols: 1536-2303]
 	hidden := config.Hidden
 
-	Q := &Tensor{
-		Data:  qkvWeight.Data[0 : hidden*hidden],
-		Shape: []int{hidden, hidden},
-	}
-	K := &Tensor{
-		Data:  qkvWeight.Data[hidden*hidden : 2*hidden*hidden],
-		Shape: []int{hidden, hidden},
-	}
-	V := &Tensor{
-		Data:  qkvWeight.Data[2*hidden*hidden : 3*hidden*hidden],
-		Shape: []int{hidden, hidden},
+	Q := NewTensor(hidden, hidden)
+	K := NewTensor(hidden, hidden)
+	V := NewTensor(hidden, hidden)
+
+	// Extract column-wise splits
+	for row := 0; row < hidden; row++ {
+		srcRowOffset := row * (3 * hidden)
+		// Copy Q columns (0:768)
+		for col := 0; col < hidden; col++ {
+			Q.Data[row*hidden+col] = qkvWeight.Data[srcRowOffset+col]
+		}
+		// Copy K columns (768:1536)
+		for col := 0; col < hidden; col++ {
+			K.Data[row*hidden+col] = qkvWeight.Data[srcRowOffset+hidden+col]
+		}
+		// Copy V columns (1536:2304)
+		for col := 0; col < hidden; col++ {
+			V.Data[row*hidden+col] = qkvWeight.Data[srcRowOffset+2*hidden+col]
+		}
 	}
 
 	return Q, K, V
