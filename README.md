@@ -26,11 +26,14 @@ python3 download_model.py --model gpt2 --output ./models/gpt2-small
 ### Build and Run
 
 ```bash
-# Build the binary
-go build -o ask-gpt2 ask_gpt2.go
+# Build all binaries
+make all
+
+# Or build individually
+make ask-gpt2
 
 # Ask a question
-./ask-gpt2 "The capital city of France is"
+./bin/ask-gpt2 "The capital city of France is"
 # Output: Paris
 
 # Run the demo
@@ -78,37 +81,48 @@ On Apple M-series (Metal acceleration disabled):
 
 ```bash
 # Ask about capitals
-./ask-gpt2 "The capital city of Italy is"
+./bin/ask-gpt2 "The capital city of Italy is"
 # Output: Rome
 
 # Complete a sentence
-./ask-gpt2 "Once upon a time"
+./bin/ask-gpt2 "Once upon a time"
 # Output: (story continuation)
 
 # Run quiz demo
 ./demo_capitals.sh
+
+# Try other binaries
+./bin/simple-demo          # Simple tokenizer demo (no models needed)
+./bin/generic-runner       # Universal architecture runner
 ```
 
 ## Project Structure
 
 ```
 nano-vllm-go/
+├── cmd/               # Command-line binaries
+│   ├── ask-gpt2/      # Main GPT-2 Q&A binary
+│   ├── generic-runner/ # Universal architecture runner
+│   └── simple-demo/   # Simple tokenizer demo
 ├── nanovllm/          # Inference engine
 ├── purego/            # Pure Go tensor ops
 │   └── tensor/        # Matrix operations
-├── models/            # Downloaded models
-├── ask_gpt2.go        # Main binary
+├── scripts/           # Utilities (model downloader)
+├── models/            # Downloaded models (gitignored)
 └── demo_capitals.sh   # Demo script
 ```
 
 ## Development
 
 ```bash
+# Build all binaries
+make all
+
 # Run tests
 go test ./...
 
-# Build
-go build -o ask-gpt2 ask_gpt2.go
+# Clean build artifacts
+make clean
 
 # Format
 go fmt ./...
