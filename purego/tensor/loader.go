@@ -151,32 +151,38 @@ func splitQKV(attn *MultiHeadAttention) {
 		return // Already split
 	}
 
-	// Extract Q, K, V
+	// Save original combined data BEFORE splitting
+	combinedData := attn.QWeight.Data
+
+	// Extract Q, K, V from the combined data
 	attn.QWeight = &Tensor{
-		Data:  attn.QWeight.Data[0 : hidden*hidden],
+		Data:  combinedData[0 : hidden*hidden],
 		Shape: []int{hidden, hidden},
 	}
 	attn.KWeight = &Tensor{
-		Data:  attn.QWeight.Data[hidden*hidden : 2*hidden*hidden],
+		Data:  combinedData[hidden*hidden : 2*hidden*hidden],
 		Shape: []int{hidden, hidden},
 	}
 	attn.VWeight = &Tensor{
-		Data:  attn.QWeight.Data[2*hidden*hidden : 3*hidden*hidden],
+		Data:  combinedData[2*hidden*hidden : 3*hidden*hidden],
 		Shape: []int{hidden, hidden},
 	}
 
 	// Split bias if present
 	if attn.QBias != nil && len(attn.QBias.Data) == 3*hidden {
+		// Save original combined bias BEFORE splitting
+		combinedBias := attn.QBias.Data
+
 		attn.QBias = &Tensor{
-			Data:  attn.QBias.Data[0:hidden],
+			Data:  combinedBias[0:hidden],
 			Shape: []int{hidden},
 		}
 		attn.KBias = &Tensor{
-			Data:  attn.QBias.Data[hidden : 2*hidden],
+			Data:  combinedBias[hidden : 2*hidden],
 			Shape: []int{hidden},
 		}
 		attn.VBias = &Tensor{
-			Data:  attn.QBias.Data[2*hidden : 3*hidden],
+			Data:  combinedBias[2*hidden : 3*hidden],
 			Shape: []int{hidden},
 		}
 	}

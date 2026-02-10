@@ -66,6 +66,7 @@ func GetGPT2Mapping() *WeightMapping {
 		FinalNormKey:      "ln_f.weight",
 		QKVCombined:       true,
 		QKVSplitFn:        splitGPT2QKV,
+		// Note: GPT-2 safetensors already has weights transposed to [in, out]
 	}
 }
 
@@ -356,12 +357,31 @@ func loadAttention(tensorData []byte, metadata map[string]TensorInfo, mapping *W
 				attn.KWeight = K
 				attn.VWeight = V
 			}
+			// Load and split combined QKV bias
+			// Remove ".weight" suffix and add ".bias"
+			qBiasKey := strings.Replace(mapping.AttentionQKey, ".weight", ".bias", 1)
+			var qkvBias *Tensor
+			loadTensorOptional(tensorData, metadata, prefix+qBiasKey, &qkvBias)
+			if qkvBias != nil {
+				hidden := config.Hidden
+				attn.QBias = &Tensor{Data: qkvBias.Data[0:hidden], Shape: []int{hidden}}
+				attn.KBias = &Tensor{Data: qkvBias.Data[hidden : 2*hidden], Shape: []int{hidden}}
+				attn.VBias = &Tensor{Data: qkvBias.Data[2*hidden : 3*hidden], Shape: []int{hidden}}
+			}
 		} else {
 			loadTensorRequired(tensorData, metadata, prefix+mapping.AttentionQKey, &attn.QWeight)
 			loadTensorOptional(tensorData, metadata, prefix+".self_attn.k_proj.weight", &attn.KWeight)
 			loadTensorOptional(tensorData, metadata, prefix+".self_attn.v_proj.weight", &attn.VWeight)
+			// Load separate biases
+			loadTensorOptional(tensorData, metadata, prefix+mapping.AttentionQKey+".bias", &attn.QBias)
+			loadTensorOptional(tensorData, metadata, prefix+".self_attn.k_proj.bias", &attn.KBias)
+			loadTensorOptional(tensorData, metadata, prefix+".self_attn.v_proj.bias", &attn.VBias)
 		}
 		loadTensorRequired(tensorData, metadata, prefix+mapping.AttentionOutKey, &attn.OutWeight)
+		// Remove ".weight" suffix and add ".bias"
+		outBiasKey := strings.Replace(mapping.AttentionOutKey, ".weight", ".bias", 1)
+		loadTensorOptional(tensorData, metadata, prefix+outBiasKey, &attn.OutBias)
+
 
 		// Transpose if PyTorch format
 		if mapping.TransposeWeights {
@@ -453,7 +473,9 @@ func loadNorm(tensorData []byte, metadata map[string]TensorInfo, key string, nor
 		return err
 	}
 	// Bias is optional (RMSNorm doesn't have bias)
-	loadTensorOptional(tensorData, metadata, key+".bias", &norm.Bias)
+	// Remove ".weight" suffix and add ".bias"
+	biasKey := strings.Replace(key, ".weight", ".bias", 1)
+	loadTensorOptional(tensorData, metadata, biasKey, &norm.Bias)
 	return nil
 }
 

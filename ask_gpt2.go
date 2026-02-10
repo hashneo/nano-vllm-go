@@ -38,10 +38,11 @@ func main() {
 	}
 
 	// Set sampling parameters (temperature, top-p, top-k)
-	modelRunner.SetSamplingParams(0.8, 0.95, 50)
+	// Use temperature=0 for greedy (most likely token)
+	modelRunner.SetSamplingParams(0.01, 1.0, 0)
 
-	// Create GPT-2 tokenizer
-	tokenizer, err := purego.NewGPT2Tokenizer(modelDir)
+	// Create proper BPE tokenizer
+	tokenizer, err := purego.NewBPETokenizer(modelDir)
 	if err != nil {
 		log.Fatalf("Failed to create tokenizer: %v\n", err)
 	}
@@ -52,9 +53,10 @@ func main() {
 
 	// Set up sampling parameters
 	// With KV caching, generation is now O(N) - much faster!
+	// Use greedy decoding (temp near 0) for factual answers
 	samplingParams := nanovllm.NewSamplingParams(
-		nanovllm.WithTemperature(0.8),
-		nanovllm.WithMaxTokens(30), // Generate 30 tokens (fast with KV cache!)
+		nanovllm.WithTemperature(0.01),
+		nanovllm.WithMaxTokens(10), // Generate 10 tokens for testing
 	)
 
 	// Generate
@@ -66,8 +68,10 @@ func main() {
 
 	// Print result
 	fmt.Println("\n" + strings.Repeat("=", 50))
-	fmt.Printf("Answer: %s\n", outputs[0].Text)
+	fmt.Printf("Full text: %s%s\n", question, outputs[0].Text)
+	fmt.Printf("Answer only: %s\n", outputs[0].Text)
 	fmt.Printf("\nGenerated %d tokens\n", len(outputs[0].TokenIDs))
+	fmt.Printf("Token IDs: %v\n", outputs[0].TokenIDs)
 
 	// Check for repetitive pattern
 	if len(outputs[0].TokenIDs) > 3 {

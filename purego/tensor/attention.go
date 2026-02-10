@@ -125,42 +125,46 @@ func (mha *MultiHeadAttention) combineHeads(x *Tensor, batchSize, seqLen int) *T
 }
 
 func (mha *MultiHeadAttention) scaledDotProductAttention(Q, K, V *Tensor) *Tensor {
-	// Q, K, V: [batch, heads, seq, head_dim]
+	// Q: [batch, heads, q_seq, head_dim]
+	// K, V: [batch, heads, kv_seq, head_dim]  (kv_seq may include cache)
 	batchSize := Q.Shape[0]
 	numHeads := Q.Shape[1]
-	seqLen := Q.Shape[2]
+	qSeqLen := Q.Shape[2]
 	headDim := Q.Shape[3]
+	kvSeqLen := K.Shape[2]
 
 	scale := float32(1.0 / math.Sqrt(float64(headDim)))
 
-	result := NewTensor(batchSize, numHeads, seqLen, headDim)
+	result := NewTensor(batchSize, numHeads, qSeqLen, headDim)
 
 	// Process each batch and head separately
 	for b := 0; b < batchSize; b++ {
 		for h := 0; h < numHeads; h++ {
-			// Extract Q, K, V for this batch and head
-			qOffset := b*numHeads*seqLen*headDim + h*seqLen*headDim
-			kOffset := qOffset
-			vOffset := qOffset
+			// Calculate offsets for this batch and head
+			qOffset := b*numHeads*qSeqLen*headDim + h*qSeqLen*headDim
+			kOffset := b*numHeads*kvSeqLen*headDim + h*kvSeqLen*headDim
+			vOffset := b*numHeads*kvSeqLen*headDim + h*kvSeqLen*headDim
 
 			// Compute attention scores: Q @ K^T
-			scores := NewTensor(seqLen, seqLen)
-			for i := 0; i < seqLen; i++ {
-				for j := 0; j < seqLen; j++ {
+			scores := NewTensor(qSeqLen, kvSeqLen)
+			for i := 0; i < qSeqLen; i++ {
+				for j := 0; j < kvSeqLen; j++ {
 					sum := float32(0)
 					for d := 0; d < headDim; d++ {
 						qVal := Q.Data[qOffset+i*headDim+d]
 						kVal := K.Data[kOffset+j*headDim+d]
 						sum += qVal * kVal
 					}
-					scores.Data[i*seqLen+j] = sum * scale
+					scores.Data[i*kvSeqLen+j] = sum * scale
 				}
 			}
 
 			// Apply causal mask (for autoregressive generation)
-			for i := 0; i < seqLen; i++ {
-				for j := i + 1; j < seqLen; j++ {
-					scores.Data[i*seqLen+j] = -1e10 // Mask future positions
+			// Each query position i can only attend to key positions up to (kvSeqLen - qSeqLen + i)
+			for i := 0; i < qSeqLen; i++ {
+				maxPos := kvSeqLen - qSeqLen + i
+				for j := maxPos + 1; j < kvSeqLen; j++ {
+					scores.Data[i*kvSeqLen+j] = -1e10 // Mask future positions
 				}
 			}
 
@@ -168,15 +172,15 @@ func (mha *MultiHeadAttention) scaledDotProductAttention(Q, K, V *Tensor) *Tenso
 			scores = Softmax(scores)
 
 			// Apply attention to values: scores @ V
-			for i := 0; i < seqLen; i++ {
+			for i := 0; i < qSeqLen; i++ {
 				for d := 0; d < headDim; d++ {
 					sum := float32(0)
-					for j := 0; j < seqLen; j++ {
-						attnWeight := scores.Data[i*seqLen+j]
+					for j := 0; j < kvSeqLen; j++ {
+						attnWeight := scores.Data[i*kvSeqLen+j]
 						vVal := V.Data[vOffset+j*headDim+d]
 						sum += attnWeight * vVal
 					}
-					resultOffset := b*numHeads*seqLen*headDim + h*seqLen*headDim
+					resultOffset := b*numHeads*qSeqLen*headDim + h*qSeqLen*headDim
 					result.Data[resultOffset+i*headDim+d] = sum
 				}
 			}
