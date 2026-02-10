@@ -389,7 +389,7 @@ Position 5 → Vector [0.87, 0.34, -0.23, ...]
 Combined → [1.10, -0.11, -0.11, ...]
 ```
 
-**File**: `purego/tensor/embedding.go`
+**File**: `purego/tensor/model.go` (embed function)
 
 **Learn More**:
 - [Word Embeddings Explained](https://lena-voita.github.io/nlp_course/word_embeddings.html)
@@ -519,7 +519,7 @@ FFN(x) = GELU(x · W1 + b1) · W2 + b2
 - Learn position-wise transformations
 - Most of the model parameters are here (~2/3 of total)
 
-**File**: `purego/tensor/mlp.go`
+**File**: `purego/tensor/transformer.go` (FeedForward struct)
 
 **Learn More**:
 - [Feed-Forward Networks in Transformers](https://kikaben.com/transformers-feedforward-layer/)
@@ -541,7 +541,7 @@ Where:
 
 **GPT-2 uses pre-norm**: LayerNorm before attention and FFN
 
-**File**: `purego/tensor/layernorm.go`
+**Files**: `purego/tensor/transformer.go` (LayerNormLayer struct), `purego/tensor/tensor.go` (LayerNorm function)
 
 **Learn More**:
 - [Layer Normalization Paper](https://arxiv.org/abs/1607.06450)
@@ -597,9 +597,9 @@ graph TB
 ```
 
 **Files**:
-- `purego/tensor/gpt2.go` - Main model
+- `purego/tensor/model.go` - Main GPT-2 model
 - `purego/tensor/attention.go` - Attention implementation
-- `purego/tensor/mlp.go` - Feed-forward network
+- `purego/tensor/transformer.go` - Transformer blocks and feed-forward network
 
 ---
 
@@ -1331,7 +1331,7 @@ Final: ['low', 'low', 'low', 'lower']
 }
 ```
 
-**File**: `purego/safetensors.go`
+**File**: `purego/tensor/loader.go` (LoadGPT2FromSafetensors function)
 
 **Learn More**:
 - [Safetensors Repository](https://github.com/huggingface/safetensors)
@@ -1372,7 +1372,7 @@ for i := 0; i < M; i++ {
 
 **This Project**: Pure Go, CPU-only (educational)
 
-**File**: `purego/tensor/matmul.go`
+**File**: `purego/tensor/tensor.go` (MatMul function)
 
 **Learn More**:
 - [Matrix Multiplication Optimization](https://siboehm.com/articles/22/Fast-MMM-on-CPU)
