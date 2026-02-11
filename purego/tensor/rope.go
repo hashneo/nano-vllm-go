@@ -98,6 +98,54 @@ func (rc *RoPECache) ApplyRoPE(q, k *Tensor, startPos int) {
 	}
 }
 
+// ApplyRoPESingleTensor applies RoPE to a single tensor
+// Useful for GQA where Q and K have different number of heads
+// t: [batch, num_heads, seq, head_dim]
+func (rc *RoPECache) ApplyRoPESingleTensor(t *Tensor, startPos int) {
+	if len(t.Shape) != 4 {
+		panic("RoPE expects 4D tensor [batch, num_heads, seq, head_dim]")
+	}
+
+	batch := t.Shape[0]
+	numHeads := t.Shape[1]
+	seqLen := t.Shape[2]
+	headDim := t.Shape[3]
+
+	if headDim != rc.HeadDim {
+		panic("Head dimension mismatch")
+	}
+
+	// Apply rotation to each position
+	for b := 0; b < batch; b++ {
+		for h := 0; h < numHeads; h++ {
+			for s := 0; s < seqLen; s++ {
+				pos := startPos + s
+				if pos >= rc.MaxSeqLen {
+					panic("Position exceeds max sequence length")
+				}
+
+				// Rotate pairs of dimensions
+				for i := 0; i < headDim/2; i++ {
+					// Get indices
+					idx := b*numHeads*seqLen*headDim + h*seqLen*headDim + s*headDim
+					cacheIdx := pos * headDim
+
+					// Get values
+					t0 := t.Data[idx+2*i]
+					t1 := t.Data[idx+2*i+1]
+
+					cos := rc.CosCache.Data[cacheIdx+2*i]
+					sin := rc.SinCache.Data[cacheIdx+2*i]
+
+					// Rotate tensor
+					t.Data[idx+2*i] = t0*cos - t1*sin
+					t.Data[idx+2*i+1] = t0*sin + t1*cos
+				}
+			}
+		}
+	}
+}
+
 // ApplyRoPEInplace is an optimized version that modifies tensors in place
 func ApplyRoPEInplace(q *Tensor, cosCache, sinCache []float32, position int, numHeads, headDim int) {
 	// Simple version for single position

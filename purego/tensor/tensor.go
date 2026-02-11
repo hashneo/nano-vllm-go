@@ -58,6 +58,7 @@ func (t *Tensor) flatIndex(indices []int) int {
 }
 
 // MatMul performs matrix multiplication: [m,k] x [k,n] -> [m,n]
+// Optimized for cache locality with loop reordering
 func MatMul(a, b *Tensor) *Tensor {
 	if len(a.Shape) != 2 || len(b.Shape) != 2 {
 		panic("MatMul requires 2D tensors")
@@ -69,13 +70,17 @@ func MatMul(a, b *Tensor) *Tensor {
 	m, k, n := a.Shape[0], a.Shape[1], b.Shape[1]
 	result := NewTensor(m, n)
 
+	// Reorder loops for better cache locality: i-p-j instead of i-j-p
+	// This accesses both matrices in row-major order
 	for i := 0; i < m; i++ {
-		for j := 0; j < n; j++ {
-			sum := float32(0)
-			for p := 0; p < k; p++ {
-				sum += a.Data[i*k+p] * b.Data[p*n+j]
+		aRowOffset := i * k
+		resultRowOffset := i * n
+		for p := 0; p < k; p++ {
+			aVal := a.Data[aRowOffset+p]
+			bRowOffset := p * n
+			for j := 0; j < n; j++ {
+				result.Data[resultRowOffset+j] += aVal * b.Data[bRowOffset+j]
 			}
-			result.Data[i*n+j] = sum
 		}
 	}
 

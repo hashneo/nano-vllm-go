@@ -44,3 +44,8 @@ output/
 
 # Downloaded models (large files)
 models/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo

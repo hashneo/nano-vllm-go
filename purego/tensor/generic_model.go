@@ -96,12 +96,17 @@ func NewGenericBlockWithType(config *ModelConfig, layerType string) *GenericBloc
 			}
 		case AttentionGQA:
 			// Grouped-Query Attention: multiple KV heads
-			block.Attention = &GroupedQueryAttention{
+			gqa := &GroupedQueryAttention{
 				NumHeads:   config.NumHeads,
 				NumKVHeads: config.NumKVHeads,
 				HeadDim:    config.HeadDim,
 				Hidden:     config.Hidden,
 			}
+			// Initialize RoPE cache if using rotary position embeddings
+			if config.PositionType == PositionRoPE {
+				gqa.RoPECache = NewRoPECache(config.HeadDim, config.MaxSeqLen, config.RoPEBase)
+			}
+			block.Attention = gqa
 		}
 
 		// Create FFN (only for attention layers, Mamba2 has its own)
@@ -234,10 +239,9 @@ func (m *TransformerModel) ForwardWithCache(tokenIDs []int, kvCache *KVCache, po
 	for i, block := range m.Blocks {
 		// Check if this block supports KV caching (has attention)
 		if mha, ok := block.Attention.(*MultiHeadAttention); ok {
-			// Get cached K,V for this layer
+			// MHA with cache
 			kCache, vCache := kvCache.GetLayer(i)
 
-			// Forward with cache
 			var newK, newV *Tensor
 			residual := x
 			if block.AttnLN != nil {
@@ -246,7 +250,29 @@ func (m *TransformerModel) ForwardWithCache(tokenIDs []int, kvCache *KVCache, po
 			x, newK, newV = mha.ForwardWithCache(x, kCache, vCache)
 			x = Add(x, residual)
 
-			// Update cache
+			kvCache.SetLayer(i, newK, newV)
+
+			// FFN
+			if block.FFN != nil {
+				residual = x
+				if block.FFNLN != nil {
+					x = block.FFNLN.Forward(x)
+				}
+				x = block.FFN.Forward(x)
+				x = Add(x, residual)
+			}
+		} else if gqa, ok := block.Attention.(*GroupedQueryAttention); ok {
+			// GQA with cache
+			kCache, vCache := kvCache.GetLayer(i)
+
+			var newK, newV *Tensor
+			residual := x
+			if block.AttnLN != nil {
+				x = block.AttnLN.Forward(x)
+			}
+			x, newK, newV = gqa.ForwardWithCache(x, kCache, vCache, posOffset)
+			x = Add(x, residual)
+
 			kvCache.SetLayer(i, newK, newV)
 
 			// FFN
@@ -259,7 +285,7 @@ func (m *TransformerModel) ForwardWithCache(tokenIDs []int, kvCache *KVCache, po
 				x = Add(x, residual)
 			}
 		} else {
-			// Non-attention blocks (e.g., Mamba2) don't use KV cache
+			// Non-attention blocks (e.g., Mamba2, MQA) don't use KV cache yet
 			x = block.Forward(x)
 		}
 	}
@@ -269,13 +295,8 @@ func (m *TransformerModel) ForwardWithCache(tokenIDs []int, kvCache *KVCache, po
 
 	// 4. LM head projection
 	xFlat := x.Reshape(batchSize*seqLen, m.Config.Hidden)
-	var logits *Tensor
-	if m.Config.TiedEmbedding {
-		// Use transposed token embedding
-		logits = MatMul(xFlat, Transpose(m.TokenEmbedding))
-	} else {
-		logits = MatMul(xFlat, m.LMHead)
-	}
+	// LMHead is already pre-transposed during model loading
+	logits := MatMul(xFlat, m.LMHead)
 	logits = logits.Reshape(batchSize, seqLen, m.Config.VocabSize)
 
 	// Apply logits scaling if set (Granite muP scaling)
