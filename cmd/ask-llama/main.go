@@ -39,6 +39,9 @@ func main() {
 	prompt := fmt.Sprintf("<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n%s<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n", question)
 
 	// Encode using Python tokenizer for accurate BPE
+	// Note: Llama uses byte-level BPE with 280K+ merge rules. Python's transformers
+	// library provides the reference implementation. Pure Go BPE is complex and
+	// requires proper byte-to-unicode mapping and regex-based pre-tokenization.
 	promptTokens, err := encodeWithPython(modelDir, prompt)
 	if err != nil {
 		log.Fatalf("Failed to encode: %v", err)
