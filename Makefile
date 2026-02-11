@@ -4,13 +4,18 @@
 BIN_DIR=bin
 
 # Main binaries
-all: ask-gpt2 generic-runner simple-demo
+all: ask-gpt2 ask-llama generic-runner simple-demo
 
 # Build individual binaries
 ask-gpt2:
 	@echo "Building ask-gpt2..."
 	@mkdir -p $(BIN_DIR)
 	@go build -o $(BIN_DIR)/ask-gpt2 ./cmd/ask-gpt2
+
+ask-llama:
+	@echo "Building ask-llama..."
+	@mkdir -p $(BIN_DIR)
+	@go build -o $(BIN_DIR)/ask-llama ./cmd/ask-llama
 
 generic-runner:
 	@echo "Building generic-runner..."
@@ -60,6 +65,7 @@ help:
 	@echo "Available targets:"
 	@echo "  all           - Build all binaries"
 	@echo "  ask-gpt2      - Build main GPT-2 binary"
+	@echo "  ask-llama     - Build Llama Q&A binary"
 	@echo "  generic-runner - Build generic architecture runner"
 	@echo "  simple-demo   - Build simple tokenizer demo"
 	@echo "  demo          - Run capital cities demo"

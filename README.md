@@ -2,6 +2,14 @@
 
 A lightweight LLM inference engine built from scratch in pure Go, implementing vLLM-style scheduling and memory management.
 
+## Documentation
+
+- [Architecture Guide](docs/ARCHITECTURE_GUIDE.md) - Detailed architecture documentation
+- [Compatible Models](docs/COMPATIBLE_MODELS.md) - Supported models and architectures
+- [Architectures Available](docs/ARCHITECTURES_AVAILABLE.md) - Available attention mechanisms
+- [Recent Bug Fixes](docs/FIX_SUMMARY.md) - SwiGLU fix for Llama models
+- [Tokenizer Status](docs/TOKENIZER_TODO.md) - Tokenizer limitations and roadmap
+
 ## Features
 
 - **Pure Go Implementation** - No Python dependencies, runs natively on any platform
@@ -65,11 +73,22 @@ make ask-gpt2
 
 ## Model Support
 
-Currently supports GPT-2 architecture:
-- GPT-2 Small (124M parameters)
-- GPT-2 Medium (355M parameters)
-- GPT-2 Large (774M parameters)
-- GPT-2 XL (1.5B parameters)
+Supports multiple architectures:
+
+**Llama Family** (with Grouped-Query Attention):
+- Llama 3.2 (1B, 3B)
+- TinyLlama 1.1B
+- Mistral 7B
+
+**GPT-2 Family** (Multi-Head Attention):
+- GPT-2 Small (124M)
+- GPT-2 Medium (355M)
+
+**Other Architectures**:
+- Falcon 7B (Multi-Query Attention)
+- Granite 350M (Hybrid Mamba2 + Attention)
+
+See [docs/COMPATIBLE_MODELS.md](docs/COMPATIBLE_MODELS.md) for full list.
 
 ## Performance
 

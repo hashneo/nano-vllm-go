@@ -233,37 +233,136 @@ func extractTokenString(val interface{}) string {
 }
 
 // Encode converts text to token IDs
-// Note: This is a simplified word-level tokenization
-// For production, integrate with actual BPE/WordPiece tokenizer
+// Handles special tokens (like Llama 3's <|begin_of_text|>) properly
 func (t *UniversalTokenizer) Encode(text string) ([]int, error) {
-	// Simple word-level tokenization
-	words := t.simpleTokenize(text)
-	tokens := make([]int, 0, len(words))
+	tokens := make([]int, 0)
 
-	for _, word := range words {
-		if id, ok := t.vocab[word]; ok {
+	// Process text, looking for special tokens first
+	i := 0
+	for i < len(text) {
+		// Check if we're at a special token
+		foundSpecial := false
+		for specialToken, tokenID := range t.addedTokens {
+			if strings.HasPrefix(text[i:], specialToken) {
+				tokens = append(tokens, tokenID)
+				i += len(specialToken)
+				foundSpecial = true
+				break
+			}
+		}
+
+		if foundSpecial {
+			continue
+		}
+
+		// Not a special token, collect until next special token or end
+		nextSpecialPos := len(text)
+		for specialToken := range t.addedTokens {
+			pos := strings.Index(text[i:], specialToken)
+			if pos >= 0 && pos < nextSpecialPos {
+				nextSpecialPos = pos
+			}
+		}
+
+		// Extract the non-special text chunk
+		end := i + nextSpecialPos
+		if end > len(text) {
+			end = len(text)
+		}
+		chunk := text[i:end]
+
+		if chunk != "" {
+			// Process the chunk with simple tokenization
+			chunkTokens := t.encodeChunk(chunk)
+			tokens = append(tokens, chunkTokens...)
+		}
+
+		i = end
+	}
+
+	return tokens, nil
+}
+
+// encodeChunk encodes a text chunk that doesn't contain special tokens
+func (t *UniversalTokenizer) encodeChunk(text string) []int {
+	// For BPE tokenizers (like Llama), spaces are encoded as Ġ (U+0120)
+	// Convert spaces to Ġ for vocab lookup
+	tokens := make([]int, 0)
+
+	// Process character by character, treating space as a prefix marker
+	i := 0
+	for i < len(text) {
+		// Start building a token
+		var token strings.Builder
+
+		// Skip and handle whitespace
+		if i < len(text) && (text[i] == ' ' || text[i] == '\n' || text[i] == '\t') {
+			// For newlines/tabs, encode as special token if in vocab
+			if text[i] == '\n' {
+				if id, ok := t.vocab["\n"]; ok {
+					tokens = append(tokens, id)
+				} else if id, ok := t.vocab["Ċ"]; ok { // BPE newline marker
+					tokens = append(tokens, id)
+				}
+				i++
+				continue
+			} else if text[i] == '\t' {
+				if id, ok := t.vocab["\t"]; ok {
+					tokens = append(tokens, id)
+				}
+				i++
+				continue
+			}
+			// Space - skip it, next token will have Ġ prefix
+			i++
+			if i >= len(text) {
+				break
+			}
+			token.WriteRune('Ġ') // U+0120 - BPE space marker
+		}
+
+		// Collect the word/token
+		start := i
+		for i < len(text) && text[i] != ' ' && text[i] != '\n' && text[i] != '\t' {
+			i++
+		}
+
+		if i > start {
+			token.WriteString(text[start:i])
+		}
+
+		if token.Len() == 0 {
+			continue
+		}
+
+		tokenStr := token.String()
+
+		// Try exact match
+		if id, ok := t.vocab[tokenStr]; ok {
 			tokens = append(tokens, id)
 		} else {
-			// Try lowercase
-			word = strings.ToLower(word)
-			if id, ok := t.vocab[word]; ok {
+			// Try without Ġ prefix
+			tokenStrNoSpace := strings.TrimPrefix(tokenStr, "Ġ")
+			if id, ok := t.vocab[tokenStrNoSpace]; ok {
 				tokens = append(tokens, id)
 			} else {
-				// Character fallback
-				for _, ch := range word {
+				// Character-level fallback
+				for _, ch := range tokenStr {
+					if ch == 'Ġ' {
+						continue // Skip the space marker
+					}
 					charStr := string(ch)
 					if id, ok := t.vocab[charStr]; ok {
 						tokens = append(tokens, id)
 					} else {
-						// Use first token as unknown
-						tokens = append(tokens, 0)
+						tokens = append(tokens, 0) // Unknown
 					}
 				}
 			}
 		}
 	}
 
-	return tokens, nil
+	return tokens
 }
 
 // simpleTokenize splits text into tokens

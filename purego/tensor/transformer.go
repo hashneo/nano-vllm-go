@@ -48,19 +48,21 @@ func (ffn *FeedForward) Forward(x *Tensor) *Tensor {
 	x = MatMul(xFlat, ffn.W1)
 
 	if ffn.UseSwiGLU {
-		// SwiGLU: W1 projects to 2*ffn_dim, split into value and gate
+		// SwiGLU: W1 is concatenated [gateWeight | upWeight]
+		// After MatMul(x, W1), we get [gate | up]
 		// x shape: [batch*seq, 2*ffn_dim]
 		halfDim := ffn.FFNDim
 
-		// Split into value and gate
-		value := x.SliceLastDim(0, halfDim)
-		gate := x.SliceLastDim(halfDim, 2*halfDim)
+		// Split: first half is gate (apply SiLU), second half is up (no activation)
+		gate := x.SliceLastDim(0, halfDim)
+		up := x.SliceLastDim(halfDim, 2*halfDim)
 
-		// Apply SiLU to gate and multiply with value
+		// Apply SiLU to gate and multiply with up
+		// SwiGLU: silu(gate) * up
 		gate = SiLU(gate)
-		x = NewTensor(value.Shape...)
-		for i := 0; i < len(value.Data); i++ {
-			x.Data[i] = value.Data[i] * gate.Data[i]
+		x = NewTensor(gate.Shape...)
+		for i := 0; i < len(gate.Data); i++ {
+			x.Data[i] = gate.Data[i] * up.Data[i]
 		}
 	} else {
 		// Standard GELU activation
