@@ -65,14 +65,41 @@ With Go tokenizer (imperfect but works):
 go run ./cmd/test-llama32/main.go
 ```
 
-## Known Limitation
+## Additional Fixes
 
-The Go `UniversalTokenizer` has limited BPE support. For production use:
-- Use Python tokenizer: `python3 scripts/encode_text.py models/llama-3.2-1b-instruct "<text>"`
-- Or implement full BPE with 280K merge rules
-- Or call HuggingFace tokenizers library from Go
+### Tokenization Fix
 
-The model inference itself is now **100% correct** and matches PyTorch.
+**Problem:** Go tokenizer lacks 280K+ BPE merge rules, causing incorrect tokenization and poor model responses.
+
+**Solution:** Integrated Python tokenizer helper in `cmd/ask-llama/main.go`:
+- Calls `scripts/encode_text.py` for accurate BPE encoding
+- Uses HuggingFace's transformers library
+- `ask-llama` binary now automatically uses Python tokenizer
+
+### Decode Fix
+
+**Problem:** Output showed `"GermanyĠisĠaĠcountry"` instead of proper spaces.
+
+**Solution:** Updated `purego/universal_tokenizer.go` Decode method:
+```go
+// Convert BPE space marker (Ġ = U+0120) to regular space
+text := result.String()
+text = strings.ReplaceAll(text, "Ġ", " ")
+```
+
+## Final Result
+
+The model is now **fully functional** end-to-end:
+
+```bash
+./bin/ask-llama "What is the capital of France?"
+# Output: The capital of France is Paris.
+
+./bin/ask-llama "What is 2 + 2?"
+# Output: 2 + 2 = 4
+```
+
+Model inference matches PyTorch exactly. Tokenization uses Python helper. Output formatting is correct.
 
 ## Files Cleaned Up
 
