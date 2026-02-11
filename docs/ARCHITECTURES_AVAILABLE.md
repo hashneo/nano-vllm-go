@@ -22,7 +22,7 @@ This project includes implementations of multiple transformer architectures for 
 
 **Try it**:
 ```bash
-./ask-gpt2 "The capital city of France is"
+./bin/ask gpt2 "The capital city of France is"
 ```
 
 ---
@@ -270,9 +270,16 @@ purego/tensor/config.go          # Architecture configs
 
 ## Current Status
 
-✅ **GPT-2**: Fully working with real models
-📚 **Falcon**: Code available for study (MQA, RoPE, parallel blocks)
-📚 **Llama**: Config available for study (GQA, SwiGLU, RMSNorm)
-📚 **Granite**: Hybrid architecture example (Attention + Mamba2)
+✅ **GPT-2**: Fully working with real models (124M-1.5B)
+✅ **Llama 3.2**: Fully working with real models (1B-3B) - GQA, RoPE, SwiGLU, RMSNorm
+✅ **Falcon**: Fully working with real models (7B) - MQA, RoPE, parallel blocks
+🧪 **Granite**: Experimental (350M-1B) - Hybrid Attention + Mamba2
+
+Use the unified `ask` CLI to try all models:
+```bash
+./bin/ask gpt2 "The capital of France is"
+./bin/ask llama "What is the capital of France?"
+./bin/ask falcon "What is the capital of Germany?"
+```
 
 All architectures are available in the codebase for educational purposes!

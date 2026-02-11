@@ -4,18 +4,13 @@
 BIN_DIR=bin
 
 # Main binaries
-all: ask-gpt2 ask-llama generic-runner simple-demo
+all: ask generic-runner simple-demo
 
-# Build individual binaries
-ask-gpt2:
-	@echo "Building ask-gpt2..."
+# Build unified ask CLI
+ask:
+	@echo "Building unified ask CLI..."
 	@mkdir -p $(BIN_DIR)
-	@go build -o $(BIN_DIR)/ask-gpt2 ./cmd/ask-gpt2
-
-ask-llama:
-	@echo "Building ask-llama..."
-	@mkdir -p $(BIN_DIR)
-	@go build -o $(BIN_DIR)/ask-llama ./cmd/ask-llama
+	@go build -o $(BIN_DIR)/ask ./cmd/ask
 
 generic-runner:
 	@echo "Building generic-runner..."
@@ -31,7 +26,7 @@ simple-demo:
 build: all
 
 # Run main demo
-demo: ask-gpt2
+demo: ask
 	@./demo_capitals.sh
 
 # Run tests
@@ -63,15 +58,14 @@ clean:
 # Help
 help:
 	@echo "Available targets:"
-	@echo "  all           - Build all binaries"
-	@echo "  ask-gpt2      - Build main GPT-2 binary"
-	@echo "  ask-llama     - Build Llama Q&A binary"
+	@echo "  all            - Build all binaries"
+	@echo "  ask            - Build unified ask CLI (supports gpt2/llama/falcon/granite)"
 	@echo "  generic-runner - Build generic architecture runner"
-	@echo "  simple-demo   - Build simple tokenizer demo"
-	@echo "  demo          - Run capital cities demo"
-	@echo "  test          - Run tests"
-	@echo "  fmt           - Format code"
-	@echo "  vet           - Run go vet"
-	@echo "  tidy          - Tidy dependencies"
-	@echo "  clean         - Remove binaries"
-	@echo "  help          - Show this help"
+	@echo "  simple-demo    - Build simple tokenizer demo"
+	@echo "  demo           - Run capital cities demo"
+	@echo "  test           - Run tests"
+	@echo "  fmt            - Format code"
+	@echo "  vet            - Run go vet"
+	@echo "  tidy           - Tidy dependencies"
+	@echo "  clean          - Remove binaries"
+	@echo "  help           - Show this help"

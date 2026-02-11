@@ -267,11 +267,11 @@ func NewGraniteConfig(size string) *ModelConfig {
 		config.FFNDim = 2048
 		config.MaxSeqLen = 32768
 
-		// Mamba2 specific
+		// Mamba2 specific (defaults, will be overridden from config.json)
 		config.Mamba2NumHeads = 48
 		config.Mamba2HeadDim = 32 // From mamba_d_head in config
-		config.Mamba2NGroups = 8
-		config.Mamba2DtRank = 0 // Auto: ceil(768/16) = 48
+		config.Mamba2NGroups = 1  // Granite 350M uses 1 group
+		config.Mamba2DtRank = 0   // Auto: ceil(768/16) = 48, same as num_heads
 
 		// Hybrid: 4 attention + 28 Mamba2 (interspersed)
 		config.NumAttentionLayers = 4

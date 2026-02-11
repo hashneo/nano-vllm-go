@@ -50,3 +50,4 @@ models/
 __pycache__/
 *.pyc
 *.pyo
+/.cache

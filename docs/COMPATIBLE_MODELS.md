@@ -27,8 +27,8 @@ All GPT-2 variants are fully supported with pure Go implementation.
 python3 scripts/download_model.py --model gpt2 --output ./models/gpt2-small
 
 # Build and run
-make ask-gpt2
-./bin/ask-gpt2 "The capital city of France is"
+make ask
+./bin/ask gpt2 "The capital city of France is"
 # Output: Paris
 
 # Run demo
@@ -57,7 +57,7 @@ Llama 3.2 models are fully supported with GQA, RoPE, and SwiGLU implementations.
 - RMSNorm layer normalization
 - Chat-optimized instruction following
 
-**Important**: Llama models require Python tokenizer for accurate BPE encoding (280K+ merge rules). The `ask-llama` binary automatically uses the Python tokenizer helper.
+**Important**: Llama models require Python tokenizer for accurate BPE encoding (280K+ merge rules). The `ask` CLI automatically uses the Python tokenizer helper for Llama models.
 
 **Usage**:
 ```bash
@@ -65,12 +65,12 @@ Llama 3.2 models are fully supported with GQA, RoPE, and SwiGLU implementations.
 python3 scripts/download_model.py --model meta-llama/Llama-3.2-1B-Instruct --output ./models/llama-3.2-1b-instruct
 
 # Build and run
-make ask-llama
-./bin/ask-llama "What is the capital of France?"
+make ask
+./bin/ask llama "What is the capital of France?"
 # Output: The capital of France is Paris.
 
 # Ask math questions
-./bin/ask-llama "What is 2 + 2?"
+./bin/ask llama "What is 2 + 2?"
 # Output: 2 + 2 = 4
 ```
 
@@ -121,7 +121,7 @@ make generic-runner
 |-------|------------|------|---------|----------------------|
 | **TinyLlama 1.1B Chat** | 1.1B | ~2.2GB | 2048 | GQA, RoPE, SwiGLU, RMSNorm |
 
-Same architecture as Llama 3.2, should work with `ask-llama` binary.
+Same architecture as Llama 3.2, works with `./bin/ask llama` command.
 
 **Download**:
 ```bash
@@ -151,7 +151,17 @@ These architectures have configuration and loading code for educational purposes
 
 **Key Learning**: Multi-Query Attention (MQA) implementation in `purego/tensor/mqa.go`
 
-**Status**: Architecture code exists in `cmd/test-falcon/` but not verified end-to-end
+**Usage**:
+```bash
+# Download model
+python3 scripts/download_model.py --model tiiuae/falcon-7b-instruct --output ./models/falcon-7b-instruct --fp16
+
+# Build and run
+make ask
+./bin/ask falcon "What is the capital of Germany?"
+```
+
+**Status**: Implemented and working, but slower on CPU (~0.2-0.3 tok/s)
 
 ---
 

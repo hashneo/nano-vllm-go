@@ -52,12 +52,14 @@ python3 download_model.py --model gpt2 --output ./models/gpt2-small
 # Build all binaries
 make all
 
-# Or build individually
-make ask-gpt2
+# Or build the ask CLI
+make ask
 
-# Ask a question
-./bin/ask-gpt2 "The capital city of France is"
-# Output: Paris
+# Ask questions with different models
+./bin/ask gpt2 "The capital city of France is"
+./bin/ask llama "What is the capital of France?"
+./bin/ask falcon "What is the capital of Germany?"
+./bin/ask granite "What is 2 + 2?"
 
 # Run the demo
 ./demo_capitals.sh
@@ -98,6 +100,11 @@ make ask-gpt2
 **Llama 3.2 Family** (Grouped-Query Attention):
 - Llama 3.2 1B/3B Instruct
 - TinyLlama 1.1B Chat
+
+**Falcon Family** (Multi-Query Attention):
+- Falcon 7B Instruct
+- Supports sharded model loading (multi-file safetensors)
+- RoPE position embeddings with MQA
 - Advanced features: GQA, RoPE, SwiGLU, RMSNorm
 - Python tokenizer integration for accurate BPE
 
@@ -105,7 +112,6 @@ make ask-gpt2
 
 - Granite 350M/1B (Hybrid Mamba2 + Attention)
 - Mistral 7B (architecture implemented)
-- Falcon 7B (Multi-Query Attention, code available)
 
 See [docs/COMPATIBLE_MODELS.md](docs/COMPATIBLE_MODELS.md) for detailed information, download instructions, and performance benchmarks.
 
@@ -128,15 +134,19 @@ On Apple M-series (no GPU acceleration):
 ```bash
 # Download and setup
 python3 scripts/download_model.py --model gpt2 --output ./models/gpt2-small
-make ask-gpt2
+make ask
 
 # Ask about capitals
-./bin/ask-gpt2 "The capital city of Italy is"
+./bin/ask gpt2 "The capital city of Italy is"
 # Output: Rome
 
 # Complete sentences
-./bin/ask-gpt2 "Once upon a time"
+./bin/ask gpt2 "Once upon a time"
 # Output: (story continuation)
+
+# Use larger model variants
+./bin/ask gpt2 -model medium "The capital city of France is"
+./bin/ask gpt2 -model large "The capital city of France is"
 
 # Run quiz demo
 ./demo_capitals.sh
@@ -147,19 +157,37 @@ make ask-gpt2
 ```bash
 # Download and setup (requires HuggingFace authentication)
 python3 scripts/download_model.py --model meta-llama/Llama-3.2-1B-Instruct --output ./models/llama-3.2-1b-instruct
-make ask-llama
+make ask
 
 # Ask questions
-./bin/ask-llama "What is the capital of France?"
+./bin/ask llama "What is the capital of France?"
 # Output: The capital of France is Paris.
 
 # Math questions
-./bin/ask-llama "What is 2 + 2?"
+./bin/ask llama "What is 2 + 2?"
 # Output: 2 + 2 = 4
 
 # General knowledge
-./bin/ask-llama "Explain photosynthesis in simple terms"
+./bin/ask llama "Explain photosynthesis in simple terms"
 # Output: (detailed explanation)
+
+# With custom temperature and length
+./bin/ask llama -temp 0.7 -max-tokens 200 "Tell me a story"
+```
+
+### Using Falcon 7B
+
+```bash
+# Download and setup
+python3 scripts/download_model.py --model tiiuae/falcon-7b-instruct --output ./models/falcon-7b-instruct --fp16
+make ask
+
+# Ask questions
+./bin/ask falcon "What is the capital of Germany?"
+# Output: Berlin
+
+# Note: Falcon 7B is larger and slower on CPU
+# Expect ~0.2-0.3 tokens/sec
 ```
 
 ### Other Tools
@@ -173,9 +201,9 @@ make ask-llama
 
 ```
 nano-vllm-go/
-├── cmd/               # Command-line binaries
-│   ├── ask-gpt2/      # Main GPT-2 Q&A binary
-│   ├── generic-runner/ # Universal architecture runner
+├── cmd/                # Command-line binaries
+│   ├── ask/            # Unified Q&A CLI (gpt2/llama/falcon/granite)
+│   ├── generic-runner/ # Universal architecture runner with batching
 │   └── simple-demo/   # Simple tokenizer demo
 ├── nanovllm/          # Inference engine
 ├── purego/            # Pure Go tensor ops

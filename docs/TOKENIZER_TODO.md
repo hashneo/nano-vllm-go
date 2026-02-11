@@ -9,7 +9,7 @@ The `UniversalTokenizer` has limited BPE (Byte-Pair Encoding) support:
 - ⚠️ Encoding does NOT apply BPE merge rules (280K+ rules for Llama 3.2)
 - ⚠️ Falls back to word-level and character-level tokenization
 
-**Working Solution:** `ask-llama` binary now automatically uses Python tokenizer helper for accurate encoding.
+**Working Solution:** The unified `ask` CLI now automatically uses Python tokenizer helper for accurate encoding (Llama/Falcon/Granite models).
 
 ## Impact
 
@@ -31,12 +31,15 @@ The model still works but may produce sub-optimal results with incorrect tokeniz
 
 ### For End Users
 
-The `ask-llama` binary automatically uses Python tokenizer integration:
+The unified `ask` CLI automatically uses Python tokenizer integration for Llama/Falcon/Granite models:
 
 ```bash
 # Just run - tokenization happens automatically
-./bin/ask-llama "What is the capital of France?"
+./bin/ask llama "What is the capital of France?"
 # Output: The capital of France is Paris.
+
+./bin/ask falcon "What is the capital of Germany?"
+# Output: Berlin
 ```
 
 No manual tokenization needed!
@@ -53,7 +56,7 @@ python3 scripts/encode_text.py models/llama-3.2-1b-instruct "Your text here"
 # 128000,128006,882,128007,271,3923,374,279,6864,315,10057,30,128009
 ```
 
-The `ask-llama` binary calls this script automatically via `encodeWithPython()` function.
+The `ask` CLI calls this script automatically via `encodeWithPython()` function for models that require Python tokenization.
 
 ## Design Choice: Python Tokenizer Integration
 

@@ -36,8 +36,15 @@ func NewMultiQueryAttention(numHeads, headDim int, maxSeqLen int) *MultiQueryAtt
 	}
 }
 
-// Forward performs multi-query attention
+// Forward performs multi-query attention without caching
 func (mqa *MultiQueryAttention) Forward(x *Tensor) *Tensor {
+	output, _, _ := mqa.ForwardWithCache(x, nil, nil, 0)
+	return output
+}
+
+// ForwardWithCache performs MQA with KV caching and position offset for RoPE
+// Returns: (output, new_k_cache, new_v_cache)
+func (mqa *MultiQueryAttention) ForwardWithCache(x *Tensor, kCache, vCache *Tensor, posOffset int) (*Tensor, *Tensor, *Tensor) {
 	batchSize := x.Shape[0]
 	seqLen := x.Shape[1]
 
@@ -50,14 +57,32 @@ func (mqa *MultiQueryAttention) Forward(x *Tensor) *Tensor {
 	// Reshape Q to [batch, num_heads, seq, head_dim]
 	Q = mqa.reshapeQ(Q, batchSize, seqLen)
 
-	// K,V are already [batch, 1, seq, head_dim]
+	// K,V are [batch, 1, seq, head_dim]
 	K = K.Reshape(batchSize, 1, seqLen, mqa.HeadDim)
 	V = V.Reshape(batchSize, 1, seqLen, mqa.HeadDim)
 
-	// Apply RoPE to Q and K
-	mqa.RoPE.ApplyRoPE(Q, K, 0)
+	// Apply RoPE with correct position offset
+	if mqa.RoPE != nil {
+		mqa.RoPE.ApplyRoPE(Q, K, posOffset)
+	}
 
-	// Scaled dot-product attention (Q uses shared K,V)
+	// If we have cache, concatenate along sequence dimension (dim=2)
+	if kCache != nil && vCache != nil {
+		K = Concatenate(kCache, K, 2)
+		V = Concatenate(vCache, V, 2)
+	}
+
+	// Save K and V for cache (before repeating)
+	newKCache := K
+	newVCache := V
+
+	// Repeat single KV head to match all query heads
+	// K, V: [batch, 1, full_seq, head_dim] -> [batch, num_heads, full_seq, head_dim]
+	fullSeqLen := K.Shape[2]
+	K = mqa.repeatKVHeads(K, batchSize, fullSeqLen)
+	V = mqa.repeatKVHeads(V, batchSize, fullSeqLen)
+
+	// Scaled dot-product attention
 	output := mqa.scaledDotProductMQA(Q, K, V, batchSize, seqLen)
 
 	// Reshape back to [batch, seq, hidden]
@@ -66,7 +91,7 @@ func (mqa *MultiQueryAttention) Forward(x *Tensor) *Tensor {
 	// Output projection
 	output = mqa.projectOut(output, batchSize, seqLen)
 
-	return output
+	return output, newKCache, newVCache
 }
 
 func (mqa *MultiQueryAttention) projectQ(x *Tensor, batchSize, seqLen int) *Tensor {
@@ -128,49 +153,82 @@ func (mqa *MultiQueryAttention) reshapeQ(Q *Tensor, batchSize, seqLen int) *Tens
 	return result
 }
 
-func (mqa *MultiQueryAttention) scaledDotProductMQA(Q, K, V *Tensor, batchSize, seqLen int) *Tensor {
-	scale := float32(1.0 / math.Sqrt(float64(mqa.HeadDim)))
+// repeatKVHeads repeats the single KV head to match all query heads
+// Input: [batch, 1, seq, head_dim]
+// Output: [batch, num_heads, seq, head_dim]
+func (mqa *MultiQueryAttention) repeatKVHeads(kv *Tensor, batchSize, seqLen int) *Tensor {
 	result := NewTensor(batchSize, mqa.NumHeads, seqLen, mqa.HeadDim)
 
-	// Each query head attends to the single shared K,V
+	// Copy the single KV head to all query head positions
 	for b := 0; b < batchSize; b++ {
 		for h := 0; h < mqa.NumHeads; h++ {
-			// Compute attention scores for this head
-			scores := NewTensor(seqLen, seqLen)
+			for s := 0; s < seqLen; s++ {
+				for d := 0; d < mqa.HeadDim; d++ {
+					// Source: single head (h=0)
+					srcIdx := b*1*seqLen*mqa.HeadDim + 0*seqLen*mqa.HeadDim + s*mqa.HeadDim + d
+					// Destination: current query head
+					dstIdx := b*mqa.NumHeads*seqLen*mqa.HeadDim + h*seqLen*mqa.HeadDim + s*mqa.HeadDim + d
+					result.Data[dstIdx] = kv.Data[srcIdx]
+				}
+			}
+		}
+	}
 
-			for i := 0; i < seqLen; i++ {
-				for j := 0; j < seqLen; j++ {
+	return result
+}
+
+func (mqa *MultiQueryAttention) scaledDotProductMQA(Q, K, V *Tensor, batchSize, qSeqLen int) *Tensor {
+	scale := float32(1.0 / math.Sqrt(float64(mqa.HeadDim)))
+	result := NewTensor(batchSize, mqa.NumHeads, qSeqLen, mqa.HeadDim)
+
+	// K and V now have shape [batch, num_heads, kv_seq, head_dim] (after repeating)
+	// where kv_seq >= qSeqLen (includes cached keys/values)
+	kvSeqLen := K.Shape[2]
+
+	// Each query head attends to its corresponding repeated K,V
+	for b := 0; b < batchSize; b++ {
+		for h := 0; h < mqa.NumHeads; h++ {
+			// Compute attention scores: Q @ K^T
+			scores := NewTensor(qSeqLen, kvSeqLen)
+
+			for i := 0; i < qSeqLen; i++ {
+				for j := 0; j < kvSeqLen; j++ {
 					sum := float32(0)
 					for d := 0; d < mqa.HeadDim; d++ {
-						qIdx := b*mqa.NumHeads*seqLen*mqa.HeadDim + h*seqLen*mqa.HeadDim + i*mqa.HeadDim + d
-						// K has only 1 head (index 0)
-						kIdx := b*1*seqLen*mqa.HeadDim + 0*seqLen*mqa.HeadDim + j*mqa.HeadDim + d
+						qIdx := b*mqa.NumHeads*qSeqLen*mqa.HeadDim + h*qSeqLen*mqa.HeadDim + i*mqa.HeadDim + d
+						kIdx := b*mqa.NumHeads*kvSeqLen*mqa.HeadDim + h*kvSeqLen*mqa.HeadDim + j*mqa.HeadDim + d
 						sum += Q.Data[qIdx] * K.Data[kIdx]
 					}
-					scores.Data[i*seqLen+j] = sum * scale
+					scores.Data[i*kvSeqLen+j] = sum * scale
 				}
 			}
 
 			// Apply causal mask
-			for i := 0; i < seqLen; i++ {
-				for j := i + 1; j < seqLen; j++ {
-					scores.Data[i*seqLen+j] = -1e10
+			// With KV cache: kvSeqLen = cached_len + q_len
+			// Query at position i (relative to current batch) can attend to:
+			// - All cached positions (0 to cached_len-1)
+			// - Current positions up to i (cached_len to cached_len+i)
+			// So mask positions > cached_len + i
+			cachedLen := kvSeqLen - qSeqLen
+			for i := 0; i < qSeqLen; i++ {
+				// Mask future positions beyond current query position
+				for j := cachedLen + i + 1; j < kvSeqLen; j++ {
+					scores.Data[i*kvSeqLen+j] = -1e10
 				}
 			}
 
-			// Softmax
+			// Softmax over key dimension
 			scores = Softmax(scores)
 
-			// Apply to values
-			for i := 0; i < seqLen; i++ {
+			// Weighted sum of values: scores @ V
+			for i := 0; i < qSeqLen; i++ {
 				for d := 0; d < mqa.HeadDim; d++ {
 					sum := float32(0)
-					for j := 0; j < seqLen; j++ {
-						// V has only 1 head (index 0)
-						vIdx := b*1*seqLen*mqa.HeadDim + 0*seqLen*mqa.HeadDim + j*mqa.HeadDim + d
-						sum += scores.Data[i*seqLen+j] * V.Data[vIdx]
+					for j := 0; j < kvSeqLen; j++ {
+						vIdx := b*mqa.NumHeads*kvSeqLen*mqa.HeadDim + h*kvSeqLen*mqa.HeadDim + j*mqa.HeadDim + d
+						sum += scores.Data[i*kvSeqLen+j] * V.Data[vIdx]
 					}
-					resultIdx := b*mqa.NumHeads*seqLen*mqa.HeadDim + h*seqLen*mqa.HeadDim + i*mqa.HeadDim + d
+					resultIdx := b*mqa.NumHeads*qSeqLen*mqa.HeadDim + h*qSeqLen*mqa.HeadDim + i*mqa.HeadDim + d
 					result.Data[resultIdx] = sum
 				}
 			}

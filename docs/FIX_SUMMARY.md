@@ -71,10 +71,10 @@ go run ./cmd/test-llama32/main.go
 
 **Problem:** Go tokenizer lacks 280K+ BPE merge rules, causing incorrect tokenization and poor model responses.
 
-**Solution:** Integrated Python tokenizer helper in `cmd/ask-llama/main.go`:
+**Solution:** Integrated Python tokenizer helper in `cmd/ask/main.go`:
 - Calls `scripts/encode_text.py` for accurate BPE encoding
 - Uses HuggingFace's transformers library
-- `ask-llama` binary now automatically uses Python tokenizer
+- `ask` CLI now automatically uses Python tokenizer for Llama/Falcon/Granite models
 
 ### Decode Fix
 
@@ -92,10 +92,10 @@ text = strings.ReplaceAll(text, "Ġ", " ")
 The model is now **fully functional** end-to-end:
 
 ```bash
-./bin/ask-llama "What is the capital of France?"
+./bin/ask llama "What is the capital of France?"
 # Output: The capital of France is Paris.
 
-./bin/ask-llama "What is 2 + 2?"
+./bin/ask llama "What is 2 + 2?"
 # Output: 2 + 2 = 4
 ```
 
@@ -109,8 +109,6 @@ Removed debug/temporary test directories:
 - `cmd/test-correct-tokens/`, `cmd/test-fixed/`, `cmd/test-gqa/`
 - `cmd/test-llama32-nocache/`, `cmd/trace-*` directories
 
-Kept useful test commands:
-- `cmd/test-llama32/` - Main Llama test
-- `cmd/test-llama-generate/` - Generation with correct tokens
-- `cmd/check-weights/` - Weight analysis tool
-- `cmd/ask-gpt2/`, `cmd/test-falcon/`, etc.
+Kept useful commands:
+- `cmd/ask/` - Unified CLI for all models (gpt2/llama/falcon/granite)
+- `cmd/generic-runner/` - Universal architecture runner with batching

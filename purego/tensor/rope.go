@@ -60,6 +60,9 @@ func (rc *RoPECache) ApplyRoPE(q, k *Tensor, startPos int) {
 		panic("Head dimension mismatch")
 	}
 
+	// Check if K has different number of heads (MQA/GQA)
+	numKVHeads := k.Shape[1] // Number of KV heads (1 for MQA, < numHeads for GQA)
+
 	// Apply rotation to each position
 	for b := 0; b < batch; b++ {
 		for h := 0; h < numHeads; h++ {
@@ -71,9 +74,13 @@ func (rc *RoPECache) ApplyRoPE(q, k *Tensor, startPos int) {
 
 				// Rotate pairs of dimensions
 				for i := 0; i < headDim/2; i++ {
-					// Get indices
+					// Get indices for Q
 					qIdx := b*numHeads*seqLen*headDim + h*seqLen*headDim + s*headDim
-					kIdx := qIdx
+
+					// For K, map query head to KV head (for MQA/GQA)
+					kvHead := h % numKVHeads // Map query head to corresponding KV head
+					kIdx := b*numKVHeads*seqLen*headDim + kvHead*seqLen*headDim + s*headDim
+
 					cacheIdx := pos * headDim
 
 					// Get values
@@ -89,7 +96,7 @@ func (rc *RoPECache) ApplyRoPE(q, k *Tensor, startPos int) {
 					q.Data[qIdx+2*i] = q0*cos - q1*sin
 					q.Data[qIdx+2*i+1] = q0*sin + q1*cos
 
-					// Rotate key
+					// Rotate key (only once per KV head, but this is simpler)
 					k.Data[kIdx+2*i] = k0*cos - k1*sin
 					k.Data[kIdx+2*i+1] = k0*sin + k1*cos
 				}

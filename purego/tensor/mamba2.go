@@ -78,68 +78,48 @@ func (m *Mamba2Layer) Forward(x *Tensor) *Tensor {
 
 	expandHidden := m.expand * m.hidden
 
-	// 1. Input projection: x -> (x, z, B, C, delta)
-	// InProj shape: [in_proj_out, hidden] where in_proj_out = 2*expand*hidden + dt_rank + 2*n_groups*state_size
+	// 1. Input projection: x -> (gate/z, xBC, dt)
+	// Granite Mamba2 splits in_proj output as:
+	// - gate (z): intermediate_size (1536)
+	// - xBC: conv_dim (1792) = intermediate_size + 2*n_groups*state_size
+	// - dt: num_heads (48)
+	// Total: 1536 + 1792 + 48 = 3376
 	xFlat := x.Reshape(batch*seqLen, hidden)
 	projected := MatMul(xFlat, Transpose(m.InProj)) // [batch*seq, in_proj_out]
 
-	// Calculate split sizes
-	dtRank := m.dtRank
-	if dtRank == 0 {
-		dtRank = (hidden + 15) / 16
-	}
-	BCSize := 2 * m.nGroups * m.stateSize
+	// Split into gate, xBC (goes to conv), dt
+	gateSize := expandHidden                    // 1536 (intermediate_size)
+	convDim := m.ConvWeight.Shape[0]            // 1792 (conv_dim = intermediate_size + 2*n_groups*state_size)
+	dtSize := m.numHeads                        // 48
 
-	// Split the projection
-	// [x: 0:expandHidden, z: expandHidden:2*expandHidden, params: 2*expandHidden:]
-	xPart := projected.SliceLastDim(0, expandHidden)
-	zPart := projected.SliceLastDim(expandHidden, 2*expandHidden)
-	params := projected.SliceLastDim(2*expandHidden, projected.Shape[1])
+	// Split the projection: [gate | xBC | dt]
+	gate := projected.SliceLastDim(0, gateSize)
+	xBC := projected.SliceLastDim(gateSize, gateSize+convDim)
+	dt := projected.SliceLastDim(gateSize+convDim, gateSize+convDim+dtSize)
 
-	xPart = xPart.Reshape(batch, seqLen, expandHidden)
-	zPart = zPart.Reshape(batch, seqLen, expandHidden)
+	gate = gate.Reshape(batch, seqLen, gateSize)
+	xBC = xBC.Reshape(batch, seqLen, convDim)
+	dt = dt.Reshape(batch, seqLen, dtSize)
 
-	// 2. Extract B, C, delta from the params
-	// Calculate the size of params last dimension
-	paramsSize := len(params.Data) / (batch * seqLen)
-	params = params.Reshape(batch, seqLen, paramsSize)
+	// 2. Causal convolution on xBC (contains x, B, C together)
+	xBCConv := m.causalConv1d(xBC)
 
-	// Split params into delta and BC
-	deltaRaw := params.SliceLastDim(0, dtRank)
-	BC := params.SliceLastDim(dtRank, dtRank+BCSize)
+	// 3. Activation (SiLU) on conv output
+	xBCConv = SiLU(xBCConv)
 
-	// Split B and C
-	B := BC.SliceLastDim(0, m.nGroups*m.stateSize)
-	C := BC.SliceLastDim(m.nGroups*m.stateSize, BCSize)
+	// 4. Split xBCConv into x, B, C
+	// After conv: [intermediate_size | n_groups*state_size | n_groups*state_size]
+	//           = [1536 | 128 | 128] = 1792
+	xSSM := xBCConv.SliceLastDim(0, expandHidden)
+	B := xBCConv.SliceLastDim(expandHidden, expandHidden+m.nGroups*m.stateSize)
+	C := xBCConv.SliceLastDim(expandHidden+m.nGroups*m.stateSize, convDim)
 
 	// Reshape B and C to [batch, seq, n_groups, state_size]
 	B = B.Reshape(batch, seqLen, m.nGroups, m.stateSize)
 	C = C.Reshape(batch, seqLen, m.nGroups, m.stateSize)
 
-	// 3. Project delta from dt_rank to num_heads (if DtProj exists)
-	var delta *Tensor
-	if m.DtProj != nil {
-		deltaFlat := deltaRaw.Reshape(batch*seqLen, dtRank)
-		delta = MatMul(deltaFlat, m.DtProj) // [batch*seq, num_heads]
-		delta = delta.Reshape(batch, seqLen, m.numHeads)
-	} else {
-		// If no DtProj, delta should already be num_heads dimension
-		// This shouldn't happen but handle gracefully
-		delta = deltaRaw
-		if delta.Shape[2] != m.numHeads {
-			// Reshape or pad as needed
-			delta = deltaRaw.SliceLastDim(0, m.numHeads)
-			delta = delta.Reshape(batch, seqLen, m.numHeads)
-		}
-	}
-
-	// 4. Causal convolution on x
-	xConv := m.causalConv1d(xPart)
-
-	// 5. Activation (SiLU)
-	xConv = SiLU(xConv)
-
-	// Add bias and apply softplus to keep positive
+	// 5. Process delta: add bias and apply softplus
+	var delta *Tensor = dt
 	if m.DeltaBias != nil {
 		for i := 0; i < batch*seqLen*m.numHeads; i++ {
 			headIdx := i % m.numHeads
@@ -149,19 +129,44 @@ func (m *Mamba2Layer) Forward(x *Tensor) *Tensor {
 	delta = Softplus(delta)
 
 	// 6. Selective scan (core SSM operation)
-	y := m.selectiveScan(xConv, B, C, delta, batch, seqLen)
+	y := m.selectiveScan(xSSM, B, C, delta, batch, seqLen)
 
-	// 7. Apply normalization
+	// 7. Apply RMSNormGated: combines gating and normalization
+	// This is equivalent to PyTorch's GraniteMoeHybridRMSNormGated
+	// Step 1: Apply gating (hidden_states * silu(gate))
+	gateActivated := SiLU(gate)
+	for i := 0; i < len(y.Data); i++ {
+		yIdx := i
+		gateIdx := (i / expandHidden) * gateSize + (i % expandHidden)
+		y.Data[yIdx] *= gateActivated.Data[gateIdx]
+	}
+
+	// Step 2: RMS normalization per sequence position
+	eps := float32(1e-5)
+	for b := 0; b < batch; b++ {
+		for s := 0; s < seqLen; s++ {
+			// Calculate variance
+			var variance float32 = 0
+			offset := b*seqLen*expandHidden + s*expandHidden
+			for d := 0; d < expandHidden; d++ {
+				val := y.Data[offset+d]
+				variance += val * val
+			}
+			variance /= float32(expandHidden)
+
+			// Apply RMS normalization
+			rms := float32(1.0) / float32(math.Sqrt(float64(variance+eps)))
+			for d := 0; d < expandHidden; d++ {
+				y.Data[offset+d] *= rms
+			}
+		}
+	}
+
+	// Step 3: Apply learned weight (if exists)
 	if m.Norm != nil {
 		for i := 0; i < len(y.Data); i++ {
 			y.Data[i] *= m.Norm.Data[i%expandHidden]
 		}
-	}
-
-	// 8. Apply gating with z
-	zActivated := SiLU(zPart)
-	for i := 0; i < len(y.Data); i++ {
-		y.Data[i] *= zActivated.Data[i]
 	}
 
 	// 9. Output projection
@@ -173,28 +178,44 @@ func (m *Mamba2Layer) Forward(x *Tensor) *Tensor {
 	return output
 }
 
-// causalConv1d performs causal 1D convolution
+// causalConv1d performs causal 1D convolution with padding
+// PyTorch conv1d uses padding=kernel_size-1, then slices back to original length
 func (m *Mamba2Layer) causalConv1d(x *Tensor) *Tensor {
 	batch := x.Shape[0]
 	seqLen := x.Shape[1]
 	channels := x.Shape[2]
 
-	result := NewTensor(batch, seqLen, channels)
+	// PyTorch adds padding=kernel_size-1 on the left (past)
+	padding := m.convKernel - 1
+	paddedSeqLen := seqLen + padding
 
-	// Simple causal convolution
+	// Create padded input (zero-padded on the left)
+	paddedInput := NewTensor(batch, paddedSeqLen, channels)
 	for b := 0; b < batch; b++ {
 		for t := 0; t < seqLen; t++ {
 			for c := 0; c < channels; c++ {
+				// Copy input to padded position (offset by padding)
+				srcIdx := b*seqLen*channels + t*channels + c
+				dstIdx := b*paddedSeqLen*channels + (t+padding)*channels + c
+				paddedInput.Data[dstIdx] = x.Data[srcIdx]
+			}
+		}
+	}
+
+	// Convolve on padded input
+	paddedResult := NewTensor(batch, paddedSeqLen, channels)
+	for b := 0; b < batch; b++ {
+		for t := 0; t < paddedSeqLen; t++ {
+			for c := 0; c < channels; c++ {
 				sum := float32(0)
 
-				// Causal: only look at current and past
+				// Apply convolution (PyTorch applies kernel in forward direction)
 				for k := 0; k < m.convKernel; k++ {
-					pos := t - k
-					if pos >= 0 {
-						// x[b, pos, c] * weight[c, 0, k]
-						xIdx := b*seqLen*channels + pos*channels + c
+					pos := t + k
+					if pos >= 0 && pos < paddedSeqLen {
+						xIdx := b*paddedSeqLen*channels + pos*channels + c
 						wIdx := c*m.convKernel + k
-						sum += x.Data[xIdx] * m.ConvWeight.Data[wIdx]
+						sum += paddedInput.Data[xIdx] * m.ConvWeight.Data[wIdx]
 					}
 				}
 
@@ -203,8 +224,21 @@ func (m *Mamba2Layer) causalConv1d(x *Tensor) *Tensor {
 					sum += m.ConvBias.Data[c]
 				}
 
-				outIdx := b*seqLen*channels + t*channels + c
-				result.Data[outIdx] = sum
+				outIdx := b*paddedSeqLen*channels + t*channels + c
+				paddedResult.Data[outIdx] = sum
+			}
+		}
+	}
+
+	// Slice back to original sequence length
+	// PyTorch slices [..., :seqLen] which takes first seqLen positions
+	result := NewTensor(batch, seqLen, channels)
+	for b := 0; b < batch; b++ {
+		for t := 0; t < seqLen; t++ {
+			for c := 0; c < channels; c++ {
+				srcIdx := b*paddedSeqLen*channels + t*channels + c
+				dstIdx := b*seqLen*channels + t*channels + c
+				result.Data[dstIdx] = paddedResult.Data[srcIdx]
 			}
 		}
 	}
@@ -241,12 +275,17 @@ func (m *Mamba2Layer) selectiveScan(x, B, C, delta *Tensor, batch, seqLen int) *
 				deltaIdx := b*seqLen*m.numHeads + t*m.numHeads + h
 				dt := delta.Data[deltaIdx]
 
-				// Discretize A matrix: A_bar = exp(dt * A_log)
-				// In Granite, A_log is just [num_heads], one value per head
+				// Discretize A matrix using zero-order hold (ZOH)
+				// In Mamba/Mamba2, A_log represents log(-A) where A is the continuous-time decay matrix
+				// Discretization:
+				//   A_bar = exp(A * dt) = exp(-exp(A_log) * dt)
+				//   B_bar = (A_bar - 1) / A * B = (1 - exp(-exp(A_log)*dt)) / exp(A_log) * B
+				// For simplicity, use Euler discretization: B_bar ≈ dt * B
 				var ABar float32 = 1.0
 				if m.ALog != nil && len(m.ALog.Data) > h {
-					// Single A value per head, broadcast to all state dims
-					ABar = float32(math.Exp(float64(dt * m.ALog.Data[h])))
+					// A = -exp(A_log), so A_bar = exp(A * dt) = exp(-exp(A_log) * dt)
+					A := -float32(math.Exp(float64(m.ALog.Data[h])))
+					ABar = float32(math.Exp(float64(A * dt)))
 				}
 
 				// Get input for this timestep
