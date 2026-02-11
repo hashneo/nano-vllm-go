@@ -8,7 +8,7 @@ When developing or running agents/tools for this project, be aware of the follow
 
 **CRITICAL**: All operations must be performed within the project root directory.
 
-- **Root Path**: `/Users/steven.taylor/Development/github/nano-vllm-go/`
+- **Root Path**: `<project-root>/` (the absolute path to your local project directory)
 - **Allowed Paths**: Only paths under the project root are accessible
 - **Forbidden Paths**: `/tmp/`, `/private/tmp/`, or any system temp directories outside the project
 

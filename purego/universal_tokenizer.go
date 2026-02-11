@@ -408,7 +408,11 @@ func (t *UniversalTokenizer) Decode(tokenIDs []int) (string, error) {
 		}
 	}
 
-	return result.String(), nil
+	// Convert BPE space marker (Ġ = U+0120) to regular space
+	text := result.String()
+	text = strings.ReplaceAll(text, "Ġ", " ")
+
+	return text, nil
 }
 
 // EOSTokenID returns the EOS token ID
