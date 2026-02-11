@@ -41,6 +41,7 @@ Thumbs.db
 
 # Output files
 output/
+tmp/
 
 # Downloaded models (large files)
 models/

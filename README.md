@@ -9,6 +9,7 @@ A lightweight LLM inference engine built from scratch in pure Go, implementing v
 - [Architectures Available](docs/ARCHITECTURES_AVAILABLE.md) - Available attention mechanisms
 - [Recent Bug Fixes](docs/FIX_SUMMARY.md) - SwiGLU fix for Llama models
 - [Tokenizer Status](docs/TOKENIZER_TODO.md) - Tokenizer limitations and roadmap
+- [Agent Guidelines](docs/AGENTS.md) - Development guidelines for sandbox environment
 
 ## Features
 

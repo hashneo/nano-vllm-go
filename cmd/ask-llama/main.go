@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	"nano-vllm-go/purego"
@@ -35,8 +38,8 @@ func main() {
 	// Format as Llama 3 chat
 	prompt := fmt.Sprintf("<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n%s<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n", question)
 
-	// Encode
-	promptTokens, err := tokenizer.Encode(prompt)
+	// Encode using Python tokenizer for accurate BPE
+	promptTokens, err := encodeWithPython(modelDir, prompt)
 	if err != nil {
 		log.Fatalf("Failed to encode: %v", err)
 	}
@@ -82,6 +85,33 @@ func main() {
 	fmt.Printf("Stats: Prefill %.2f tok/s, Decode %.2f tok/s\n",
 		float64(len(promptTokens))/prefillTime.Seconds(),
 		float64(tokensGenerated)/decodeTime.Seconds())
+}
+
+func encodeWithPython(modelDir, text string) ([]int, error) {
+	cmd := exec.Command("python3", "scripts/encode_text.py", modelDir, text)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("python tokenizer failed: %v", err)
+	}
+
+	// Parse comma-separated token IDs
+	tokenStr := strings.TrimSpace(string(output))
+	tokenParts := strings.Split(tokenStr, ",")
+
+	tokens := make([]int, 0, len(tokenParts))
+	for _, part := range tokenParts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		tokenID, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse token ID '%s': %v", part, err)
+		}
+		tokens = append(tokens, tokenID)
+	}
+
+	return tokens, nil
 }
 
 func argmax(data []float32) int {
