@@ -408,11 +408,40 @@ func (t *UniversalTokenizer) Decode(tokenIDs []int) (string, error) {
 		}
 	}
 
-	// Convert BPE space marker (Ġ = U+0120) to regular space
 	text := result.String()
-	text = strings.ReplaceAll(text, "Ġ", " ")
+
+	// Apply byte-level decoding (used by GPT-2, Llama, Granite, Falcon)
+	// Converts Unicode range U+0100-U+01FF back to bytes 0x00-0xFF
+	// Common mappings: Ġ (U+0120) → space (0x20), Ċ (U+010A) → newline (0x0A)
+	text = decodeByteLevelBPE(text)
 
 	return text, nil
+}
+
+// decodeByteLevelBPE converts byte-level BPE encoding back to normal text
+// Byte-level BPE (used by GPT-2, Llama, Granite, Falcon) maps bytes to Unicode:
+// - Printable ASCII (0x21-0x7E): stays as-is (! to ~)
+// - Special bytes (0x00-0x20, 0x7F-0xFF): encoded as U+0100 + byte_value
+// Common mappings: Ġ (U+0120) → space, Ċ (U+010A) → newline, ĉ (U+0109) → tab
+func decodeByteLevelBPE(text string) string {
+	var result []byte
+
+	for _, r := range text {
+		// Byte-level encoded characters (U+0100 to U+01FF)
+		// These represent bytes 0x00-0xFF that were encoded
+		if r >= 0x0100 && r <= 0x01FF {
+			// Convert back: U+0100 → 0x00, U+010A → 0x0A (newline), U+0120 → 0x20 (space)
+			result = append(result, byte(r-0x0100))
+		} else if r < 0x0100 {
+			// Regular printable ASCII (already correct) or Latin-1
+			result = append(result, byte(r))
+		} else {
+			// Other Unicode (shouldn't normally appear in byte-level BPE but handle gracefully)
+			result = append(result, []byte(string(r))...)
+		}
+	}
+
+	return string(result)
 }
 
 // EOSTokenID returns the EOS token ID

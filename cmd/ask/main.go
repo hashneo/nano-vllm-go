@@ -85,11 +85,24 @@ func main() {
 	}
 
 	temperature := fs.Float64("temp", defaultTemp, "Temperature for sampling (0=greedy)")
-	maxTokens := fs.Int("max-tokens", defaultMaxTokens, "Maximum tokens to generate")
+	maxTokensStr := fs.String("max-tokens", "", "Maximum tokens to generate (default: model-specific, or 100)")
 	modelVariant := fs.String("model", "small", "Model variant (GPT-2 only: small/medium/large/xl)")
 
 	// Parse flags starting from os.Args[2:]
 	fs.Parse(os.Args[2:])
+
+	// Parse max-tokens: use model default if not specified
+	maxTokens := defaultMaxTokens
+	if *maxTokensStr != "" {
+		var err error
+		_, err = fmt.Sscanf(*maxTokensStr, "%d", &maxTokens)
+		if err != nil {
+			log.Fatalf("Invalid max-tokens value: %s (must be a positive integer)\n", *maxTokensStr)
+		}
+		if maxTokens <= 0 {
+			log.Fatalf("Invalid max-tokens value: %d (must be positive)\n", maxTokens)
+		}
+	}
 
 	// Get question from remaining args
 	if fs.NArg() < 1 {
@@ -138,6 +151,16 @@ func main() {
 		}
 	}
 
+	// If max-tokens not specified, use a reasonable portion of model's context window
+	if *maxTokensStr == "" {
+		// Use up to 25% of context window for generation (reserve 75% for prompt)
+		modelMaxTokens := model.Config.MaxSeqLen / 4
+		if modelMaxTokens < defaultMaxTokens {
+			modelMaxTokens = defaultMaxTokens
+		}
+		maxTokens = modelMaxTokens
+	}
+
 	// Format prompt with chat template
 	prompt := formatPrompt(question, config.ChatFormat)
 
@@ -165,7 +188,7 @@ func main() {
 	// Generate response
 	useTemperature := *temperature > 0
 	generatedTokens, prefillTime, decodeTime := generateResponse(
-		model, promptTokens, tokenizer, *maxTokens, *temperature, useTemperature,
+		model, promptTokens, tokenizer, maxTokens, *temperature, useTemperature,
 	)
 
 	// Print statistics
@@ -184,7 +207,7 @@ func printUsage() {
 	fmt.Println("  falcon    - Falcon-7B-Instruct")
 	fmt.Println("\nFlags:")
 	fmt.Println("  -temp <float>      Temperature for sampling (default: 0.0 for greedy)")
-	fmt.Println("  -max-tokens <int>  Maximum tokens to generate (default: 100)")
+	fmt.Println("  -max-tokens <int>  Maximum tokens to generate (default: model-specific)")
 	fmt.Println("  -model <variant>   Model variant (GPT-2 only: small/medium/large/xl)")
 	fmt.Println("\nExamples:")
 	fmt.Println("  ask gpt2 \"The capital of France is\"          # Completion")
