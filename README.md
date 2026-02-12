@@ -22,9 +22,9 @@ For production LLM inference, please use established frameworks like:
 - [Architecture Guide](docs/ARCHITECTURE_GUIDE.md) - Detailed architecture documentation
 - [Compatible Models](docs/COMPATIBLE_MODELS.md) - Supported models and architectures
 - [Architectures Available](docs/ARCHITECTURES_AVAILABLE.md) - Available attention mechanisms
-- [Falcon Model Fixes](docs/FALCON_SUCCESS.md) - Falcon-7B now fully working
-- [Recent Bug Fixes](docs/FIX_SUMMARY.md) - SwiGLU fix for Llama models
-- [Tokenizer Status](docs/TOKENIZER_TODO.md) - Tokenizer limitations and roadmap
+- [Falcon Model Fixes](docs/changes/FALCON_SUCCESS.md) - Falcon-7B now fully working
+- [Recent Bug Fixes](docs/changes/FIX_SUMMARY.md) - SwiGLU fix for Llama models
+- [Tokenizer Status](docs/changes/TOKENIZER_TODO.md) - Tokenizer limitations and roadmap
 
 ## Features
 
