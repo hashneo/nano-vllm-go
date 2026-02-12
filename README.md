@@ -22,6 +22,7 @@ For production LLM inference, please use established frameworks like:
 - [Architecture Guide](docs/ARCHITECTURE_GUIDE.md) - Detailed architecture documentation
 - [Compatible Models](docs/COMPATIBLE_MODELS.md) - Supported models and architectures
 - [Architectures Available](docs/ARCHITECTURES_AVAILABLE.md) - Available attention mechanisms
+- [Falcon Model Fixes](docs/FALCON_SUCCESS.md) - Falcon-7B now fully working
 - [Recent Bug Fixes](docs/FIX_SUMMARY.md) - SwiGLU fix for Llama models
 - [Tokenizer Status](docs/TOKENIZER_TODO.md) - Tokenizer limitations and roadmap
 
@@ -34,7 +35,7 @@ For production LLM inference, please use established frameworks like:
 - **KV Caching** - Key-Value cache for efficient O(N) generation
 - **Block-based Memory Management** - Efficient memory allocation with prefix caching
 - **Continuous Batching** - Dynamic batch composition for optimal resource utilization
-- **Multiple Model Families** - GPT-2, Llama 3.2, Granite 3.0 fully supported
+- **Multiple Model Families** - GPT-2, Llama 3.2, Falcon-7B, Granite 3.0 fully supported
 
 ## Quick Start
 
@@ -62,6 +63,7 @@ make ask
 ./bin/ask gpt2 "The capital city of France is"
 ./bin/ask llama "What is the capital of France?"
 ./bin/ask granite "What is the capital of Germany?"
+./bin/ask falcon "What is the capital of France?"
 
 # Run the demo
 ./demo_capitals.sh
@@ -114,16 +116,18 @@ make ask
 - RoPE position embeddings
 - Correct output generation verified
 
-### 🧪 Experimental
-
 **Falcon Family** (Multi-Query Attention):
-- Falcon 7B Instruct
-- ⚠️ Currently produces garbage output (debugging in progress)
+- Falcon-7B-Instruct ✅
 - MQA with 71 query heads, 1 KV head
-- Very slow on CPU (7B parameters)
+- Parallel attention + FFN architecture
+- RoPE position embeddings
+- Verified correct output generation
+
+### 🧪 Experimental
 
 **Other:**
 - Mistral 7B (architecture implemented, not fully tested)
+- Falcon-1B (different architecture: ALiBi, standard MHA)
 
 See [docs/COMPATIBLE_MODELS.md](docs/COMPATIBLE_MODELS.md) for detailed information, download instructions, and performance benchmarks.
 
@@ -143,6 +147,11 @@ On Apple M-series (no GPU acceleration):
 - Prefill: ~2.8 tokens/second
 - Decode: ~2.8 tokens/second
 - Note: Efficient due to sparse expert routing
+
+**Falcon-7B-Instruct (7B parameters):**
+- Prefill: ~0.14 tokens/second
+- Decode: ~0.27 tokens/second
+- Note: Very memory efficient MQA (10-100x smaller KV cache)
 
 ## Examples
 

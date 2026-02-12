@@ -85,7 +85,11 @@ func (mqa *MultiQueryAttention) ForwardWithCache(x *Tensor, kCache, vCache *Tens
 	// Scaled dot-product attention
 	output := mqa.scaledDotProductMQA(Q, K, V, batchSize, seqLen)
 
-	// Reshape back to [batch, seq, hidden]
+	// Transpose from [batch, num_heads, seq, head_dim] to [batch, seq, num_heads, head_dim]
+	// This is required before we can flatten to [batch, seq, hidden]!
+	output = mqa.transposeHeadsAndSeq(output, batchSize, seqLen)
+
+	// Now flatten to [batch, seq, hidden]
 	output = output.Reshape(batchSize, seqLen, mqa.Hidden)
 
 	// Output projection
@@ -230,6 +234,30 @@ func (mqa *MultiQueryAttention) scaledDotProductMQA(Q, K, V *Tensor, batchSize, 
 					}
 					resultIdx := b*mqa.NumHeads*qSeqLen*mqa.HeadDim + h*qSeqLen*mqa.HeadDim + i*mqa.HeadDim + d
 					result.Data[resultIdx] = sum
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// transposeHeadsAndSeq transposes from [batch, num_heads, seq, head_dim] to [batch, seq, num_heads, head_dim]
+// This is required before flattening to [batch, seq, hidden] for output projection
+func (mqa *MultiQueryAttention) transposeHeadsAndSeq(input *Tensor, batchSize, seqLen int) *Tensor {
+	// Input:  [batch, num_heads, seq, head_dim]
+	// Output: [batch, seq, num_heads, head_dim]
+	result := NewTensor(batchSize, seqLen, mqa.NumHeads, mqa.HeadDim)
+
+	for b := 0; b < batchSize; b++ {
+		for s := 0; s < seqLen; s++ {
+			for h := 0; h < mqa.NumHeads; h++ {
+				for d := 0; d < mqa.HeadDim; d++ {
+					// Source: [batch, num_heads, seq, head_dim]
+					srcIdx := b*mqa.NumHeads*seqLen*mqa.HeadDim + h*seqLen*mqa.HeadDim + s*mqa.HeadDim + d
+					// Destination: [batch, seq, num_heads, head_dim]
+					dstIdx := b*seqLen*mqa.NumHeads*mqa.HeadDim + s*mqa.NumHeads*mqa.HeadDim + h*mqa.HeadDim + d
+					result.Data[dstIdx] = input.Data[srcIdx]
 				}
 			}
 		}

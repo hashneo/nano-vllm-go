@@ -703,22 +703,45 @@ func splitGPT2QKV(qkvWeight *Tensor, config *ModelConfig) (*Tensor, *Tensor, *Te
 
 // splitFalconQKV splits Falcon's combined QKV weight for MQA
 func splitFalconQKV(qkvWeight *Tensor, config *ModelConfig) (*Tensor, *Tensor, *Tensor) {
-	// Falcon format: [hidden, hidden + 2*head_dim]
-	// Q is full size, K,V are single head
+	// Falcon MQA format: [hidden, (num_heads + 2) * head_dim]
+	// The weight matrix has an INTERLEAVED layout per row:
+	// For each input feature (row): [Q_head0, Q_head1, ..., Q_head(n-1), K, V]
+	// where each component is head_dim elements wide
+	//
+	// Example for Falcon-7B (71 heads, head_dim=64):
+	// Weight shape: [4544, 4672] where 4672 = (71 + 2) * 64
+	// Each row has 73 "chunks" of 64 elements: 71 for Q heads, 1 for K, 1 for V
+
 	hidden := config.Hidden
 	headDim := config.HeadDim
+	numHeads := config.NumHeads
 
-	Q := &Tensor{
-		Data:  qkvWeight.Data[0 : hidden*hidden],
-		Shape: []int{hidden, hidden},
-	}
-	K := &Tensor{
-		Data:  qkvWeight.Data[hidden*hidden : hidden*(hidden+headDim)],
-		Shape: []int{hidden, headDim},
-	}
-	V := &Tensor{
-		Data:  qkvWeight.Data[hidden*(hidden+headDim) : hidden*(hidden+2*headDim)],
-		Shape: []int{hidden, headDim},
+	// Create output tensors
+	Q := NewTensor(hidden, numHeads*headDim) // [hidden, num_heads * head_dim]
+	K := NewTensor(hidden, headDim)          // [hidden, head_dim]
+	V := NewTensor(hidden, headDim)          // [hidden, head_dim]
+
+	// Deinterleave the weights row by row
+	for row := 0; row < hidden; row++ {
+		// Source row starts at position: row * (num_heads + 2) * head_dim
+		srcRowOffset := row * (numHeads + 2) * headDim
+
+		// Extract all Q heads (first num_heads * head_dim elements, but interleaved)
+		for h := 0; h < numHeads; h++ {
+			srcOffset := srcRowOffset + h*headDim
+			dstOffset := row*numHeads*headDim + h*headDim
+			copy(Q.Data[dstOffset:dstOffset+headDim], qkvWeight.Data[srcOffset:srcOffset+headDim])
+		}
+
+		// Extract K (at position num_heads * head_dim within the row)
+		srcK := srcRowOffset + numHeads*headDim
+		dstK := row * headDim
+		copy(K.Data[dstK:dstK+headDim], qkvWeight.Data[srcK:srcK+headDim])
+
+		// Extract V (at position (num_heads+1) * head_dim within the row)
+		srcV := srcRowOffset + (numHeads+1)*headDim
+		dstV := row * headDim
+		copy(V.Data[dstV:dstV+headDim], qkvWeight.Data[srcV:srcV+headDim])
 	}
 
 	return Q, K, V

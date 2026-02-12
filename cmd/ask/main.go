@@ -181,7 +181,7 @@ func printUsage() {
 	fmt.Println("  gpt2      - GPT-2 (small/medium/large/xl)")
 	fmt.Println("  llama     - Llama-3.2-1B-Instruct")
 	fmt.Println("  granite   - Granite-350M")
-	fmt.Println("  falcon    - Falcon-7B-Instruct (experimental, produces garbage output)")
+	fmt.Println("  falcon    - Falcon-7B-Instruct")
 	fmt.Println("\nFlags:")
 	fmt.Println("  -temp <float>      Temperature for sampling (default: 0.0 for greedy)")
 	fmt.Println("  -max-tokens <int>  Maximum tokens to generate (default: 100)")
@@ -287,6 +287,8 @@ func generateResponse(model *tensor.TransformerModel, promptTokens []int, tokeni
 	// Decode phase - generate remaining tokens
 	decodeStart := time.Now()
 	generatedTokens := []int{nextToken}
+	pendingNewline := false // Track if we have a pending newline to print
+
 	for i := 0; i < maxTokens-1; i++ {
 		logits, kvCache = model.ForwardWithCache([]int{allTokens[len(allTokens)-1]}, kvCache, len(allTokens)-1)
 		lastLogits = model.GetLogitsForLastToken(logits)
@@ -297,14 +299,36 @@ func generateResponse(model *tensor.TransformerModel, promptTokens []int, tokeni
 			nextToken = argmax(lastLogits)
 		}
 
-		decoded, _ = tokenizer.Decode([]int{nextToken})
-		fmt.Printf("%s", decoded)
-
 		allTokens = append(allTokens, nextToken)
 		generatedTokens = append(generatedTokens, nextToken)
 
+		// Stop on EOS token
 		if nextToken == tokenizer.EOSTokenID() {
 			break
+		}
+
+		// Check for "\nUser" pattern to stop chat turn
+		if len(generatedTokens) >= 2 {
+			prevToken := generatedTokens[len(generatedTokens)-2]
+			// If previous token was newline and current is "User", stop without printing either
+			if (prevToken == 193 || prevToken == 198) && nextToken == 7932 {
+				break
+			}
+		}
+
+		// Print pending newline if this isn't "User"
+		if pendingNewline && nextToken != 7932 {
+			fmt.Print("\n")
+			pendingNewline = false
+		}
+
+		// If this is a newline, hold it (don't print yet) in case next token is "User"
+		if nextToken == 193 || nextToken == 198 {
+			pendingNewline = true
+		} else {
+			// Print the token
+			decoded, _ := tokenizer.Decode([]int{nextToken})
+			fmt.Printf("%s", decoded)
 		}
 	}
 	decodeTime := time.Since(decodeStart)
