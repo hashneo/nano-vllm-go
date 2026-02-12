@@ -1,7 +1,6 @@
 package tensor
 
 import (
-	"fmt"
 	"math"
 )
 
@@ -203,7 +202,8 @@ type GroupedQueryAttention struct {
 	VWeight   *Tensor // [hidden, kv_hidden]
 	OutWeight *Tensor // [hidden, hidden]
 
-	RoPECache *RoPECache // Rotary position embeddings (for Llama/Mistral)
+	RoPECache      *RoPECache // Rotary position embeddings (for Llama/Mistral)
+	AttentionScale float32    // Attention score scaling (default: 1/sqrt(head_dim), Granite: 0.015625)
 }
 
 // Forward performs GQA forward pass
@@ -333,15 +333,6 @@ func (gqa *GroupedQueryAttention) splitHeadsKV(x *Tensor, batchSize, seqLen int)
 func (gqa *GroupedQueryAttention) repeatKVHeads(x *Tensor, repeat int, batchSize, seqLen int) *Tensor {
 	result := NewTensor(batchSize, gqa.NumHeads, seqLen, gqa.HeadDim)
 
-	// Debug: Print for first decode call (first layer only)
-	debugFirst := false  // Disabled for now
-	if debugFirst && batchSize == 1 && seqLen == 1 {
-		fmt.Printf("[repeatKVHeads] Input shape: %v, NumKVHeads=%d, NumHeads=%d, repeat=%d\n",
-			x.Shape, gqa.NumKVHeads, gqa.NumHeads, repeat)
-		fmt.Printf("[repeatKVHeads] Input KV head 0 first 3 values: %.4f, %.4f, %.4f\n",
-			x.Data[0], x.Data[1], x.Data[2])
-	}
-
 	for b := 0; b < batchSize; b++ {
 		for kvHead := 0; kvHead < gqa.NumKVHeads; kvHead++ {
 			for r := 0; r < repeat; r++ {
@@ -357,15 +348,6 @@ func (gqa *GroupedQueryAttention) repeatKVHeads(x *Tensor, repeat int, batchSize
 		}
 	}
 
-	if debugFirst {
-		fmt.Printf("[repeatKVHeads] Output Q head 0 (copy of KV head 0): %.4f, %.4f, %.4f\n",
-			result.Data[0], result.Data[1], result.Data[2])
-		// Check head 4 (should also be copy of KV head 0 if repeat=4)
-		head4Offset := 4 * seqLen * gqa.HeadDim
-		fmt.Printf("[repeatKVHeads] Output Q head 4 (should also be KV head 0 if repeat>=4): %.4f, %.4f, %.4f\n",
-			result.Data[head4Offset], result.Data[head4Offset+1], result.Data[head4Offset+2])
-	}
-
 	return result
 }
 
@@ -374,7 +356,12 @@ func (gqa *GroupedQueryAttention) computeScores(Q, K *Tensor, batchSize, qSeqLen
 	// K: [batch, num_heads, kv_seq, head_dim]
 	// Output: [batch, num_heads, q_seq, kv_seq]
 	scores := NewTensor(batchSize, gqa.NumHeads, qSeqLen, kvSeqLen)
-	scale := float32(1.0) / float32(math.Sqrt(float64(gqa.HeadDim)))
+
+	// Use custom AttentionScale if set (Granite muP), otherwise default scaling
+	scale := gqa.AttentionScale
+	if scale == 0 {
+		scale = float32(1.0) / float32(math.Sqrt(float64(gqa.HeadDim)))
+	}
 
 	for b := 0; b < batchSize; b++ {
 		for h := 0; h < gqa.NumHeads; h++ {

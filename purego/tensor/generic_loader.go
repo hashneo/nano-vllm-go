@@ -24,6 +24,12 @@ type WeightMapping struct {
 	AttentionOutKey string // e.g., ".attn.c_proj.weight"
 	FFNUpKey        string // e.g., ".mlp.c_fc.weight", ".mlp.dense_h_to_4h.weight"
 	FFNDownKey      string // e.g., ".mlp.c_proj.weight", ".mlp.dense_4h_to_h.weight"
+
+	// MoE (Mixture of Experts)
+	MoERouterKey string // e.g., ".block_sparse_moe.router.layer.weight"
+	MoEInputKey  string // e.g., ".block_sparse_moe.input_linear.weight"
+	MoEOutputKey string // e.g., ".block_sparse_moe.output_linear.weight"
+
 	AttnNormKey     string // e.g., ".ln_1.weight"
 	FFNNormKey      string // e.g., ".ln_2.weight"
 	InputNormKey    string // For parallel blocks, e.g., ".input_layernorm.weight"
@@ -109,6 +115,33 @@ func GetLlamaMapping() *WeightMapping {
 	}
 }
 
+// GetGraniteMoEMapping returns weight mapping for Granite MoE
+func GetGraniteMoEMapping() *WeightMapping {
+	return &WeightMapping{
+		TokenEmbeddingKey: "model.embed_tokens.weight",
+		PosEmbeddingKey:   "",
+		LMHeadKey:         "", // Tied with token embedding
+		LayerPrefix:       "model.layers.{layer}",
+
+		// Attention keys
+		AttentionQKey:   ".self_attn.q_proj.weight",
+		AttentionKVKey:  ".self_attn.k_proj.weight", // Separate K,V for GQA
+		AttentionOutKey: ".self_attn.o_proj.weight",
+
+		// MoE keys
+		MoERouterKey:  ".block_sparse_moe.router.layer.weight",
+		MoEInputKey:   ".block_sparse_moe.input_linear.weight",
+		MoEOutputKey:  ".block_sparse_moe.output_linear.weight",
+
+		// Norms
+		AttnNormKey:  ".input_layernorm.weight",
+		FFNNormKey:   ".post_attention_layernorm.weight",
+		FinalNormKey: "model.norm.weight",
+
+		TransposeWeights: true, // PyTorch format
+	}
+}
+
 // GetGraniteMapping returns weight mapping for Granite (hybrid Mamba2 + Attention)
 func GetGraniteMapping() *WeightMapping {
 	return &WeightMapping{
@@ -122,9 +155,10 @@ func GetGraniteMapping() *WeightMapping {
 		AttentionKVKey:  ".self_attn.k_proj.weight", // Separate K,V for GQA
 		AttentionOutKey: ".self_attn.o_proj.weight",
 
-		// Shared MLP (used by both attention and Mamba2 layers)
-		FFNUpKey:   ".shared_mlp.input_linear.weight",
-		FFNDownKey: ".shared_mlp.output_linear.weight",
+		// MoE keys (Granite 3.0 1B uses MoE for all layers)
+		MoERouterKey: ".block_sparse_moe.router.layer.weight",
+		MoEInputKey:  ".block_sparse_moe.input_linear.weight",
+		MoEOutputKey: ".block_sparse_moe.output_linear.weight",
 
 		// Norms
 		InputNormKey:    ".input_layernorm.weight",
@@ -176,7 +210,11 @@ func LoadModel(modelPath string, config *ModelConfig) (*TransformerModel, error)
 	case ArchLlama:
 		mapping = GetLlamaMapping()
 	case ArchGranite:
-		mapping = GetGraniteMapping()
+		if config.UseMoE {
+			mapping = GetGraniteMoEMapping()
+		} else {
+			mapping = GetGraniteMapping()
+		}
 	default:
 		return nil, fmt.Errorf("unsupported architecture: %s", config.Architecture)
 	}
@@ -215,7 +253,8 @@ func LoadModel(modelPath string, config *ModelConfig) (*TransformerModel, error)
 	}
 
 	// If tied, use transposed token embedding
-	if config.TiedEmbedding {
+	// Also fallback if LMHead wasn't found (some models have tied embeddings even if config says otherwise)
+	if config.TiedEmbedding || model.LMHead == nil {
 		model.LMHead = Transpose(model.TokenEmbedding)
 	}
 
@@ -269,9 +308,15 @@ func loadBlock(tensorData []byte, metadata map[string]TensorInfo, mapping *Weigh
 			return fmt.Errorf("attention: %w", err)
 		}
 
-		// Load FFN weights
-		if err := loadFFN(tensorData, metadata, mapping, block, prefix); err != nil {
-			return fmt.Errorf("FFN: %w", err)
+		// Load FFN or MoE weights
+		if config.UseMoE {
+			if err := loadMoE(tensorData, metadata, mapping, block, prefix); err != nil {
+				return fmt.Errorf("MoE: %w", err)
+			}
+		} else {
+			if err := loadFFN(tensorData, metadata, mapping, block, prefix); err != nil {
+				return fmt.Errorf("FFN: %w", err)
+			}
 		}
 
 		// Load norms
@@ -513,6 +558,35 @@ func loadFFN(tensorData []byte, metadata map[string]TensorInfo, mapping *WeightM
 	// Biases (optional)
 	loadTensorOptional(tensorData, metadata, prefix+mapping.FFNUpKey+".bias", &block.FFN.B1)
 	loadTensorOptional(tensorData, metadata, prefix+mapping.FFNDownKey+".bias", &block.FFN.B2)
+
+	return nil
+}
+
+// loadMoE loads MoE (Mixture of Experts) weights
+func loadMoE(tensorData []byte, metadata map[string]TensorInfo, mapping *WeightMapping, block *GenericBlock, prefix string) error {
+	if block.MoE == nil {
+		return fmt.Errorf("MoE layer is nil")
+	}
+
+	// Load router weights: [num_experts, hidden] -> transpose to [hidden, num_experts]
+	if err := loadTensorRequired(tensorData, metadata, prefix+mapping.MoERouterKey, &block.MoE.Router); err != nil {
+		return fmt.Errorf("router: %w", err)
+	}
+	// Always transpose router from [num_experts, hidden] to [hidden, num_experts]
+	block.MoE.Router = Transpose(block.MoE.Router)
+
+	// Load expert weights - these are 3D: [num_experts, dim1, dim2]
+	// We load them as-is without transposing
+	if err := loadTensorRequired(tensorData, metadata, prefix+mapping.MoEInputKey, &block.MoE.InputLinear); err != nil {
+		return fmt.Errorf("input_linear: %w", err)
+	}
+
+	if err := loadTensorRequired(tensorData, metadata, prefix+mapping.MoEOutputKey, &block.MoE.OutputLinear); err != nil {
+		return fmt.Errorf("output_linear: %w", err)
+	}
+
+	// Mark that we're using separate expert weights (not shared)
+	block.MoE.SharedExperts = false
 
 	return nil
 }
@@ -858,6 +932,15 @@ func LoadModelConfig(configPath string) (*ModelConfig, error) {
 		config.LogitsScaling = float32(v)
 	}
 
+	// MoE parameters
+	if v, ok := raw["num_local_experts"].(float64); ok {
+		config.NumExperts = int(v)
+		config.UseMoE = true
+	}
+	if v, ok := raw["num_experts_per_tok"].(float64); ok {
+		config.NumExpertsPerTok = int(v)
+	}
+
 	return config, nil
 }
 
@@ -872,8 +955,16 @@ func inferConfigFromJSON(raw map[string]interface{}) *ModelConfig {
 			return NewFalconConfig("7b")
 		case "llama", "LlamaForCausalLM":
 			return NewLlamaConfig("7b")
+		case "granitemoe":
+			// Granite MoE (pure attention + MoE FFN)
+			if hidden, ok := raw["hidden_size"].(float64); ok {
+				if hidden <= 1024 {
+					return NewGraniteMoEConfig("350m")
+				}
+			}
+			return NewGraniteMoEConfig("350m")
 		case "granitemoehybrid":
-			// Detect Granite size from hidden_size
+			// Granite Hybrid (attention + Mamba2)
 			if hidden, ok := raw["hidden_size"].(float64); ok {
 				if hidden <= 800 {
 					return NewGraniteConfig("350m")
@@ -990,7 +1081,11 @@ func LoadShardedModel(modelDir string, indexPath string, config *ModelConfig) (*
 	case ArchLlama:
 		mapping = GetLlamaMapping()
 	case ArchGranite:
-		mapping = GetGraniteMapping()
+		if config.UseMoE {
+			mapping = GetGraniteMoEMapping()
+		} else {
+			mapping = GetGraniteMapping()
+		}
 	default:
 		return nil, fmt.Errorf("unsupported architecture: %s", config.Architecture)
 	}
@@ -1029,7 +1124,8 @@ func LoadShardedModel(modelDir string, indexPath string, config *ModelConfig) (*
 	}
 
 	// If tied, use transposed token embedding
-	if config.TiedEmbedding {
+	// Also fallback if LMHead wasn't found (some models have tied embeddings even if config says otherwise)
+	if config.TiedEmbedding || model.LMHead == nil {
 		model.LMHead = Transpose(model.TokenEmbedding)
 	}
 

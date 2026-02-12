@@ -272,6 +272,7 @@ func generateResponse(model *tensor.TransformerModel, promptTokens []int, tokeni
 
 	// Get first token
 	lastLogits := model.GetLogitsForLastToken(logits)
+
 	var nextToken int
 	if useTemperature {
 		nextToken = sampleWithTemperature(lastLogits, temperature)

@@ -1,10 +1,5 @@
 package tensor
 
-import (
-	"fmt"
-	"math"
-)
-
 // TransformerModel is a generic transformer that adapts to different architectures
 type TransformerModel struct {
 	Config *ModelConfig
@@ -28,9 +23,11 @@ type GenericBlock struct {
 	Config    *ModelConfig
 	Attention AttentionLayer // Can be MHA, MQA, or GQA
 	FFN       *FeedForward
-	InputLN   *LayerNormLayer // Input norm (used by parallel blocks)
-	AttnLN    *LayerNormLayer // Attention norm (used by sequential blocks)
-	FFNLN     *LayerNormLayer // FFN norm (used by sequential blocks)
+	MoE       *MoELayer        // Mixture of Experts (alternative to FFN)
+	InputLN   *LayerNormLayer  // Input norm (used by parallel blocks)
+	AttnLN    *LayerNormLayer  // Attention norm (used by sequential blocks)
+	FFNLN     *LayerNormLayer  // FFN norm (used by sequential blocks)
+	Mamba2    *Mamba2Layer     // Mamba2 layer (for hybrid architectures)
 }
 
 // AttentionLayer interface for different attention types
@@ -102,10 +99,11 @@ func NewGenericBlockWithType(config *ModelConfig, layerType string) *GenericBloc
 		case AttentionGQA:
 			// Grouped-Query Attention: multiple KV heads
 			gqa := &GroupedQueryAttention{
-				NumHeads:   config.NumHeads,
-				NumKVHeads: config.NumKVHeads,
-				HeadDim:    config.HeadDim,
-				Hidden:     config.Hidden,
+				NumHeads:       config.NumHeads,
+				NumKVHeads:     config.NumKVHeads,
+				HeadDim:        config.HeadDim,
+				Hidden:         config.Hidden,
+				AttentionScale: config.AttentionMultiplier, // Use attention multiplier for score scaling (Granite muP)
 			}
 			// Initialize RoPE cache if using rotary position embeddings
 			if config.PositionType == PositionRoPE {
@@ -114,11 +112,22 @@ func NewGenericBlockWithType(config *ModelConfig, layerType string) *GenericBloc
 			block.Attention = gqa
 		}
 
-		// Create FFN (only for attention layers, Mamba2 has its own)
-		block.FFN = &FeedForward{
-			Hidden:    config.Hidden,
-			FFNDim:    config.FFNDim,
-			UseSwiGLU: config.ActivationType == ActivationSwiGLU,
+		// Create FFN or MoE
+		if config.UseMoE {
+			// Create MoE layer instead of standard FFN
+			block.MoE = NewMoELayer(
+				config.NumExperts,
+				config.NumExpertsPerTok,
+				config.Hidden,
+				config.FFNDim,
+			)
+		} else {
+			// Create standard FFN
+			block.FFN = &FeedForward{
+				Hidden:    config.Hidden,
+				FFNDim:    config.FFNDim,
+				UseSwiGLU: config.ActivationType == ActivationSwiGLU,
+			}
 		}
 
 		// Create norms based on block style
@@ -137,13 +146,6 @@ func NewGenericBlockWithType(config *ModelConfig, layerType string) *GenericBloc
 
 // Forward applies the transformer block based on block style
 func (block *GenericBlock) Forward(x *Tensor) *Tensor {
-	// Debug: Uncomment to trace layer execution
-	// if _, isMamba := block.Attention.(*Mamba2Layer); isMamba {
-	// 	fmt.Println("DEBUG: Executing Mamba2 layer")
-	// } else {
-	// 	fmt.Println("DEBUG: Executing Attention layer")
-	// }
-
 	// Check if this is a Mamba2 layer by checking the Attention type
 	if _, isMamba := block.Attention.(*Mamba2Layer); isMamba {
 		// Mamba2 layer - has special forward pass
@@ -169,7 +171,7 @@ func (block *GenericBlock) forwardMamba2(x *Tensor) *Tensor {
 	}
 	x = block.Attention.Forward(x)
 
-	// Apply residual multiplier if set (Granite muP scaling)
+	// Apply residual multiplier for attention/mamba output (Granite muP scaling)
 	if block.Config.ResidualMultiplier != 0 {
 		for i := range x.Data {
 			x.Data[i] = residual.Data[i] + block.Config.ResidualMultiplier*x.Data[i]
@@ -206,7 +208,7 @@ func (block *GenericBlock) forwardSequential(x *Tensor) *Tensor {
 	x = block.AttnLN.Forward(x)
 	x = block.Attention.Forward(x)
 
-	// Apply residual multiplier if set (Granite muP scaling)
+	// Apply residual multiplier for attention output (Granite muP scaling)
 	if block.Config.ResidualMultiplier != 0 {
 		for i := range x.Data {
 			x.Data[i] = residual.Data[i] + block.Config.ResidualMultiplier*x.Data[i]
@@ -218,7 +220,13 @@ func (block *GenericBlock) forwardSequential(x *Tensor) *Tensor {
 	// Feed-forward with residual
 	residual = x
 	x = block.FFNLN.Forward(x)
-	x = block.FFN.Forward(x)
+
+	// Use MoE or standard FFN
+	if block.MoE != nil {
+		x = block.MoE.Forward(x)
+	} else {
+		x = block.FFN.Forward(x)
+	}
 
 	// Apply residual multiplier if set (Granite muP scaling)
 	if block.Config.ResidualMultiplier != 0 {
@@ -239,9 +247,14 @@ func (block *GenericBlock) forwardParallel(x *Tensor) *Tensor {
 	// Single layer norm at input
 	x = block.InputLN.Forward(x)
 
-	// Run attention and FFN in parallel (conceptually)
+	// Run attention and FFN/MoE in parallel (conceptually)
 	attnOut := block.Attention.Forward(x)
-	ffnOut := block.FFN.Forward(x)
+	var ffnOut *Tensor
+	if block.MoE != nil {
+		ffnOut = block.MoE.Forward(x)
+	} else {
+		ffnOut = block.FFN.Forward(x)
+	}
 
 	// Add both outputs to residual
 	for i := range residual.Data {
@@ -302,31 +315,8 @@ func (m *TransformerModel) ForwardWithCache(tokenIDs []int, kvCache *KVCache, po
 				x = block.AttnLN.Forward(x)
 			}
 			x, newK, newV = mha.ForwardWithCache(x, kCache, vCache)
-			x = Add(x, residual)
 
-			kvCache.SetLayer(i, newK, newV)
-
-			// FFN
-			if block.FFN != nil {
-				residual = x
-				if block.FFNLN != nil {
-					x = block.FFNLN.Forward(x)
-				}
-				x = block.FFN.Forward(x)
-				x = Add(x, residual)
-			}
-		} else if gqa, ok := block.Attention.(*GroupedQueryAttention); ok {
-			// GQA with cache
-			kCache, vCache := kvCache.GetLayer(i)
-
-			var newK, newV *Tensor
-			residual := x
-			if block.AttnLN != nil {
-				x = block.AttnLN.Forward(x)
-			}
-			x, newK, newV = gqa.ForwardWithCache(x, kCache, vCache, posOffset)
-
-			// Apply residual multiplier if set (Granite muP scaling)
+			// Apply residual multiplier for attention output (Granite muP scaling)
 			if m.Config.ResidualMultiplier != 0 {
 				for j := range x.Data {
 					x.Data[j] = residual.Data[j] + m.Config.ResidualMultiplier*x.Data[j]
@@ -345,7 +335,7 @@ func (m *TransformerModel) ForwardWithCache(tokenIDs []int, kvCache *KVCache, po
 				}
 				x = block.FFN.Forward(x)
 
-				// Apply residual multiplier if set (Granite muP scaling)
+				// Apply residual multiplier for FFN output (Granite muP scaling)
 				if m.Config.ResidualMultiplier != 0 {
 					for j := range x.Data {
 						x.Data[j] = residual.Data[j] + m.Config.ResidualMultiplier*x.Data[j]
@@ -353,6 +343,49 @@ func (m *TransformerModel) ForwardWithCache(tokenIDs []int, kvCache *KVCache, po
 				} else {
 					x = Add(x, residual)
 				}
+			}
+		} else if gqa, ok := block.Attention.(*GroupedQueryAttention); ok {
+			// GQA with cache
+			kCache, vCache := kvCache.GetLayer(i)
+
+			var newK, newV *Tensor
+			residual := x
+			if block.AttnLN != nil {
+				x = block.AttnLN.Forward(x)
+			}
+			x, newK, newV = gqa.ForwardWithCache(x, kCache, vCache, posOffset)
+
+			// Apply residual multiplier for attention output (Granite muP scaling)
+			if m.Config.ResidualMultiplier != 0 {
+				for j := range x.Data {
+					x.Data[j] = residual.Data[j] + m.Config.ResidualMultiplier*x.Data[j]
+				}
+			} else {
+				x = Add(x, residual)
+			}
+
+			kvCache.SetLayer(i, newK, newV)
+
+			// FFN or MoE
+			residual = x
+			if block.FFNLN != nil {
+				x = block.FFNLN.Forward(x)
+			}
+
+			// Use MoE or standard FFN
+			if block.MoE != nil {
+				x = block.MoE.Forward(x)
+			} else if block.FFN != nil {
+				x = block.FFN.Forward(x)
+			}
+
+			// Apply residual multiplier if set (Granite muP scaling)
+			if m.Config.ResidualMultiplier != 0 {
+				for j := range x.Data {
+					x.Data[j] = residual.Data[j] + m.Config.ResidualMultiplier*x.Data[j]
+				}
+			} else {
+				x = Add(x, residual)
 			}
 		} else if mqa, ok := block.Attention.(*MultiQueryAttention); ok {
 			// MQA with cache (Falcon)
@@ -370,9 +403,15 @@ func (m *TransformerModel) ForwardWithCache(tokenIDs []int, kvCache *KVCache, po
 
 				// Create new tensor for output
 				result := NewTensor(residual.Shape...)
-				// Add both outputs to residual
-				for j := range residual.Data {
-					result.Data[j] = residual.Data[j] + attnOut.Data[j] + ffnOut.Data[j]
+				// Add both outputs to residual (with multipliers for Granite muP scaling)
+				if m.Config.AttentionMultiplier != 0 && m.Config.ResidualMultiplier != 0 {
+					for j := range residual.Data {
+						result.Data[j] = residual.Data[j] + m.Config.AttentionMultiplier*attnOut.Data[j] + m.Config.ResidualMultiplier*ffnOut.Data[j]
+					}
+				} else {
+					for j := range residual.Data {
+						result.Data[j] = residual.Data[j] + attnOut.Data[j] + ffnOut.Data[j]
+					}
 				}
 				x = result
 
@@ -385,7 +424,15 @@ func (m *TransformerModel) ForwardWithCache(tokenIDs []int, kvCache *KVCache, po
 				}
 				var newK, newV *Tensor
 				x, newK, newV = mqa.ForwardWithCache(x, kCache, vCache, posOffset)
-				x = Add(x, residual)
+
+				// Apply residual multiplier for attention output (Granite muP scaling)
+				if m.Config.ResidualMultiplier != 0 {
+					for j := range x.Data {
+						x.Data[j] = residual.Data[j] + m.Config.ResidualMultiplier*x.Data[j]
+					}
+				} else {
+					x = Add(x, residual)
+				}
 
 				kvCache.SetLayer(i, newK, newV)
 
@@ -396,7 +443,15 @@ func (m *TransformerModel) ForwardWithCache(tokenIDs []int, kvCache *KVCache, po
 						x = block.FFNLN.Forward(x)
 					}
 					x = block.FFN.Forward(x)
-					x = Add(x, residual)
+
+					// Apply residual multiplier for FFN output (Granite muP scaling)
+					if m.Config.ResidualMultiplier != 0 {
+						for j := range x.Data {
+							x.Data[j] = residual.Data[j] + m.Config.ResidualMultiplier*x.Data[j]
+						}
+					} else {
+						x = Add(x, residual)
+					}
 				}
 			}
 		} else {
@@ -444,8 +499,6 @@ func (m *TransformerModel) ForwardWithCacheDebug(tokenIDs []int, kvCache *KVCach
 		}
 	}
 
-	printTensorStats("After embeddings", x)
-
 	// 2. Apply first transformer block
 	block := m.Blocks[0]
 	if mqa, ok := block.Attention.(*MultiQueryAttention); ok && m.Config.BlockStyle == BlockParallel {
@@ -454,20 +507,16 @@ func (m *TransformerModel) ForwardWithCacheDebug(tokenIDs []int, kvCache *KVCach
 		residual := x
 		if block.InputLN != nil {
 			x = block.InputLN.Forward(x)
-			printTensorStats("After first block LayerNorm", x)
 		}
 		attnOut, newK, newV := mqa.ForwardWithCache(x, kCache, vCache, posOffset)
-		printTensorStats("After first block attention", attnOut)
 
 		ffnOut := block.FFN.Forward(x)
-		printTensorStats("After first block FFN", ffnOut)
 
 		result := NewTensor(residual.Shape...)
 		for j := range residual.Data {
 			result.Data[j] = residual.Data[j] + attnOut.Data[j] + ffnOut.Data[j]
 		}
 		x = result
-		printTensorStats("After first block output (residual+attn+ffn)", x)
 		kvCache.SetLayer(0, newK, newV)
 	}
 
@@ -494,7 +543,6 @@ func (m *TransformerModel) ForwardWithCacheDebug(tokenIDs []int, kvCache *KVCach
 
 	// 3. Final layer norm
 	x = m.LNFinal.Forward(x)
-	printTensorStats("After final LayerNorm", x)
 
 	// 4. LM head projection
 	xFlat := x.Reshape(batchSize*seqLen, m.Config.Hidden)
@@ -508,39 +556,6 @@ func (m *TransformerModel) ForwardWithCacheDebug(tokenIDs []int, kvCache *KVCach
 	}
 
 	return logits, kvCache
-}
-
-func printTensorStats(label string, t *Tensor) {
-	var sum, minVal, maxVal float32
-	minVal = t.Data[0]
-	maxVal = t.Data[0]
-
-	for _, v := range t.Data {
-		sum += v
-		if v < minVal {
-			minVal = v
-		}
-		if v > maxVal {
-			maxVal = v
-		}
-	}
-	mean := sum / float32(len(t.Data))
-
-	var sumSq float32
-	for _, v := range t.Data {
-		diff := v - mean
-		sumSq += diff * diff
-	}
-	std := float32(0.0)
-	if len(t.Data) > 0 {
-		std = float32(math.Sqrt(float64(sumSq / float32(len(t.Data)))))
-	}
-
-	fmt.Printf("\n%s:\n", label)
-	fmt.Printf("  Mean: %.6f\n", mean)
-	fmt.Printf("  Std: %.6f\n", std)
-	fmt.Printf("  Min: %.6f\n", minVal)
-	fmt.Printf("  Max: %.6f\n", maxVal)
 }
 
 // embed creates embeddings based on position type

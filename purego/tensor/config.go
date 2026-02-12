@@ -92,6 +92,11 @@ type ModelConfig struct {
 	// Other
 	TiedEmbedding bool // Whether LM head shares weights with token embedding
 
+	// MoE parameters (for Mixture of Experts models like Granite MoE)
+	UseMoE           bool // Whether to use MoE instead of standard FFN
+	NumExperts       int  // Total number of experts
+	NumExpertsPerTok int  // Number of experts to use per token (top-k)
+
 	// Mamba2 parameters (for hybrid architectures like Granite)
 	Mamba2Expand      int     // Expansion factor (usually 2)
 	Mamba2StateSize   int     // State dimension (usually 128)
@@ -321,6 +326,55 @@ func NewGraniteConfig(size string) *ModelConfig {
 	return config
 }
 
+// NewGraniteMoEConfig creates config for IBM Granite MoE models
+func NewGraniteMoEConfig(size string) *ModelConfig {
+	config := &ModelConfig{
+		Architecture:   ArchGranite,
+		AttentionType:  AttentionGQA,
+		NormType:       NormRMS,
+		PositionType:   PositionRoPE,
+		ActivationType: ActivationSwiGLU,
+		BlockStyle:     BlockSequential,
+		RoPEBase:       10000.0,
+		NormEps:        1e-6,
+		TiedEmbedding:  true,
+
+		// MoE parameters - will be overridden from config.json
+		UseMoE:           false, // Will be set to true if num_local_experts is found
+		NumExperts:       32,
+		NumExpertsPerTok: 8,
+
+		EOSTokenID: 0,
+		BOSTokenID: 0,
+		PadTokenID: 0,
+	}
+
+	switch size {
+	case "350m":
+		config.ModelName = "granite-moe-350m"
+		config.VocabSize = 49155
+		config.Hidden = 1024
+		config.NumLayers = 24
+		config.NumHeads = 16
+		config.NumKVHeads = 8 // GQA: 8 KV heads
+		config.HeadDim = 64
+		config.FFNDim = 512 // Intermediate size for MoE experts
+		config.MaxSeqLen = 4096
+
+		// muP scaling parameters - these will be loaded from config.json
+		// Set to 0 to detect if they weren't loaded (should use config.json values)
+		config.EmbeddingMultiplier = 0
+		config.AttentionMultiplier = 0
+		config.ResidualMultiplier = 0
+		config.LogitsScaling = 0
+
+	default:
+		return NewGraniteMoEConfig("350m")
+	}
+
+	return config
+}
+
 // PrintInfo prints model configuration
 func (c *ModelConfig) PrintInfo() {
 	println("Model Configuration:")
@@ -339,6 +393,20 @@ func (c *ModelConfig) PrintInfo() {
 	println("  Normalization:", string(c.NormType))
 	println("  Activation:", string(c.ActivationType))
 	println("  Block style:", string(c.BlockStyle))
+
+	// Print muP scaling if present
+	if c.EmbeddingMultiplier != 0 {
+		println("  Embedding scale:", c.EmbeddingMultiplier)
+	}
+	if c.AttentionMultiplier != 0 {
+		println("  Attention scale:", c.AttentionMultiplier)
+	}
+	if c.ResidualMultiplier != 0 {
+		println("  Residual scale:", c.ResidualMultiplier)
+	}
+	if c.LogitsScaling != 0 {
+		println("  Logits scale:", c.LogitsScaling)
+	}
 
 	// Calculate parameters
 	params := c.EstimateParameters()
