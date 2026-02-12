@@ -10,6 +10,11 @@ A deep dive into LLM inference engines, transformer architectures, and the evolu
 4. [GPT Evolution (GPT-2 to GPT-5)](#gpt-evolution)
 5. [Inference Pipeline](#inference-pipeline)
 6. [Memory Management](#memory-management)
+   - [Context Windows](#context-windows)
+   - [The Memory Problem](#the-memory-problem)
+   - [vLLM Solution: PagedAttention](#vllm-solution-pagedattention)
+   - [Prefix Caching](#prefix-caching)
+   - [Continuous Batching](#continuous-batching)
 7. [Technologies & Algorithms](#technologies--algorithms)
 8. [Further Reading](#further-reading)
 
@@ -1066,6 +1071,129 @@ output := tokenizer.Decode(seq.TokenIDs)
 ---
 
 ## Memory Management
+
+### Context Windows
+
+**Definition**: The context window (or sequence length) is the maximum number of tokens a model can process at once. This includes both the input prompt and generated output.
+
+**Why it Matters**:
+- Models can only "see" tokens within their context window
+- Information beyond the window is invisible to the model
+- Longer contexts enable richer conversations and document understanding
+- Context is a hard architectural limit, not just a performance consideration
+
+#### Context Limits by Model
+
+| Model | Context Window | Notes |
+|-------|---------------|-------|
+| **GPT-2** | 1,024 tokens | Fixed positional embeddings |
+| **Falcon-7B** | 2,048 tokens | RoPE embeddings, MQA reduces memory |
+| **Llama 3.2 1B** | 4,096 tokens | RoPE with rope_theta=500,000 |
+| **Granite 3.0** | 4,096 tokens | Hybrid attention with Mamba2 (128k capable) |
+| **GPT-3.5** | 4,096 tokens | Standard architecture |
+| **GPT-4** | 8,192-128,000 | Extended via RoPE scaling |
+| **Claude 3.5** | 200,000 tokens | Advanced attention techniques |
+
+#### Our Implementation
+
+**Hard Limits**:
+- **MaxSeqLen Parameter**: Set during model loading from config.json
+- **RoPE Cache**: Precomputed for MaxSeqLen positions (can't exceed without recomputing)
+- **Learned Positions**: Fixed at training time (GPT-2)
+- **Memory**: KV cache grows linearly with context length
+
+**What We Support**:
+```go
+// From config.go
+GPT2:      MaxSeqLen = 1024   // Learned positional embeddings
+Falcon-7B: MaxSeqLen = 2048   // RoPE with base 10000
+Llama 3.2: MaxSeqLen = 4096   // RoPE with extended base
+Granite:   MaxSeqLen = 4096   // Hybrid (128k technically possible)
+```
+
+**Techniques We Use**:
+1. **KV Caching**: Only stores keys/values for past tokens, not full activations
+2. **Block-Based Allocation**: PagedAttention-style memory management
+3. **Prefix Sharing**: Common prompt prefixes share KV cache blocks
+4. **MQA/GQA**: Reduces KV cache size by 10-100x (Falcon, Llama, Granite)
+
+**What We DON'T Support** (yet):
+- ❌ **Context Extension**: Dynamic RoPE scaling for longer contexts
+- ❌ **Sliding Window Attention**: Fixed window that "forgets" old tokens (Mistral)
+- ❌ **Sparse Attention**: Only attend to subset of tokens (Longformer)
+- ❌ **Memory Compression**: Compress old KV cache entries
+- ❌ **Retrieval Augmentation**: External memory beyond context window
+
+#### Memory Impact of Context Length
+
+**KV Cache Memory Formula**:
+```
+KV_memory = 2 × num_layers × num_kv_heads × context_length × head_dim × bytes_per_value
+```
+
+**Concrete Examples**:
+
+**GPT-2 Small** (12 layers, 12 heads, 64 dim, FP32):
+```
+1K context:   2 × 12 × 12 × 1024 × 64 × 4 = 38 MB
+4K context:   2 × 12 × 12 × 4096 × 64 × 4 = 151 MB
+```
+
+**Falcon-7B** (32 layers, 1 KV head, 64 dim, FP16) - **MQA Advantage**:
+```
+2K context:   2 × 32 × 1 × 2048 × 64 × 2 = 16 MB  ⚡ 71x smaller!
+vs Standard:  2 × 32 × 71 × 2048 × 64 × 2 = 1,181 MB
+```
+
+**Llama 3.2 1B** (28 layers, 4 KV heads, 64 dim, FP16):
+```
+4K context:   2 × 28 × 4 × 4096 × 64 × 2 = 58 MB
+8K context:   2 × 28 × 4 × 8192 × 64 × 2 = 115 MB
+```
+
+**Key Insight**: Multi-Query Attention (MQA) and Grouped-Query Attention (GQA) dramatically reduce KV cache memory, making longer contexts more feasible!
+
+#### Limitations & Tradeoffs
+
+**Hard Constraints**:
+1. **RoPE Frequency Cache**: Precomputed for MaxSeqLen positions
+   - Must regenerate for longer contexts
+   - Stored in `rope.go:NewRoPECache(headDim, maxSeqLen, base)`
+
+2. **Positional Embeddings**: Learned positions can't extend beyond training
+   - GPT-2's 1024 limit is architectural, not configurable
+
+3. **Memory**: Linear growth with context length
+   - Longer contexts = larger KV cache
+   - MQA/GQA help but don't eliminate the constraint
+
+4. **Computational Cost**: O(n²) attention complexity
+   - Each new token attends to all previous tokens
+   - Prefill phase scales quadratically with prompt length
+
+**Performance vs Context**:
+```
+Short context (< 512):    ⚡⚡⚡ Fast
+Medium context (512-2K):  ⚡⚡  Acceptable
+Long context (2K-8K):     ⚡    Slow
+Very long (> 8K):         🐌   Very slow (if supported)
+```
+
+#### Extending Context (Future Work)
+
+**RoPE Scaling Techniques**:
+1. **Linear Scaling**: Divide positions by factor (simple but degrades quality)
+2. **NTK-aware Scaling**: Adjust frequency base (better quality preservation)
+3. **YaRN**: Yet another RoPE extension (state-of-the-art)
+
+**Alternative Approaches**:
+- **Sliding Window**: Mistral's 4K sliding window within 32K context
+- **Flash Attention**: Memory-efficient attention (doesn't extend context but enables it)
+- **Ring Attention**: Distribute attention across devices for massive contexts
+
+**Current Status**: We support the native context length specified in model configs. No dynamic extension yet.
+
+---
 
 ### The Memory Problem
 
