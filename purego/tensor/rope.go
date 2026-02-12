@@ -75,6 +75,8 @@ func (rc *RoPECache) ApplyRoPE(q, k *Tensor, startPos int) {
 	// result = x * cos + rotate_half(x) * sin
 	// where rotate_half splits head_dim in half and returns [-x2, x1]
 	halfDim := headDim / 2
+
+	// Apply RoPE to Q (all query heads)
 	for b := 0; b < batch; b++ {
 		for h := 0; h < numHeads; h++ {
 			for s := 0; s < seqLen; s++ {
@@ -83,20 +85,12 @@ func (rc *RoPECache) ApplyRoPE(q, k *Tensor, startPos int) {
 					panic("Position exceeds max sequence length")
 				}
 
-				// Get indices for Q
 				qIdx := b*numHeads*seqLen*headDim + h*seqLen*headDim + s*headDim
-
-				// For K, map query head to KV head (for MQA/GQA)
-				kvHead := h % numKVHeads // Map query head to corresponding KV head
-				kIdx := b*numKVHeads*seqLen*headDim + kvHead*seqLen*headDim + s*headDim
-
 				cacheIdx := pos * headDim
 
-				// Store original values for Q and K
+				// Store original values for Q
 				qOriginal := make([]float32, headDim)
-				kOriginal := make([]float32, headDim)
 				copy(qOriginal, q.Data[qIdx:qIdx+headDim])
-				copy(kOriginal, k.Data[kIdx:kIdx+headDim])
 
 				// Apply rotation to Q: result = x * cos + rotate_half(x) * sin
 				for i := 0; i < headDim; i++ {
@@ -113,6 +107,25 @@ func (rc *RoPECache) ApplyRoPE(q, k *Tensor, startPos int) {
 
 					q.Data[qIdx+i] = qOriginal[i]*cos + rotated*sin
 				}
+			}
+		}
+	}
+
+	// Apply RoPE to K (only KV heads, not repeated)
+	for b := 0; b < batch; b++ {
+		for kvHead := 0; kvHead < numKVHeads; kvHead++ {
+			for s := 0; s < seqLen; s++ {
+				pos := startPos + s
+				if pos >= rc.MaxSeqLen {
+					panic("Position exceeds max sequence length")
+				}
+
+				kIdx := b*numKVHeads*seqLen*headDim + kvHead*seqLen*headDim + s*headDim
+				cacheIdx := pos * headDim
+
+				// Store original values for K
+				kOriginal := make([]float32, headDim)
+				copy(kOriginal, k.Data[kIdx:kIdx+headDim])
 
 				// Apply rotation to K: result = x * cos + rotate_half(x) * sin
 				for i := 0; i < headDim; i++ {

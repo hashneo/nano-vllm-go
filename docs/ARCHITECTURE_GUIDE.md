@@ -1560,6 +1560,148 @@ FP32 approx: [-3.105, 2.691]
 
 ---
 
+## Implementation Learnings
+
+### RoPE (Rotary Position Embeddings) Implementation
+
+RoPE is used by modern models (Llama, Falcon, Granite) instead of learned positional embeddings. The correct implementation uses HuggingFace's "rotate_half" approach:
+
+**Key Insight: rotate_half Method**
+
+Instead of rotating adjacent dimension pairs `[d0, d1], [d2, d3], ...`, the correct approach splits dimensions in half:
+
+```
+For head_dim = 64:
+- First half: dimensions 0-31
+- Second half: dimensions 32-63
+
+rotate_half(x) = [-x[32:64], x[0:32]]
+result = x * cos + rotate_half(x) * sin
+```
+
+**Cache Computation:**
+```go
+// Compute frequencies for half the dimensions
+for i := 0; i < headDim/2; i++ {
+    freq := 1.0 / (base ** (2*i / headDim))
+    angle := position * freq
+
+    // Store in both halves (concatenated pattern)
+    cosCache[i] = cos(angle)
+    cosCache[i + headDim/2] = cos(angle)
+    sinCache[i] = sin(angle)
+    sinCache[i + headDim/2] = sin(angle)
+}
+```
+
+**Application:**
+```go
+for i := 0; i < headDim; i++ {
+    // rotate_half: first half gets -second_half, second half gets first_half
+    var rotated float32
+    if i < halfDim {
+        rotated = -original[i + halfDim]
+    } else {
+        rotated = original[i - halfDim]
+    }
+
+    result[i] = original[i] * cos[i] + rotated * sin[i]
+}
+```
+
+**Critical for MQA/GQA:** When Q and K have different numbers of heads, apply RoPE separately to avoid corrupting K by re-applying rotation multiple times.
+
+### Mixture of Experts (MoE) Implementation
+
+MoE models like Granite 3.0 use sparse expert routing to scale capacity without proportionally increasing compute.
+
+**Architecture:**
+- 32 experts (each is a 2-layer FFN)
+- Router selects top-8 experts per token
+- Only ~400M parameters active per forward pass (from ~1B total)
+
+**GLU-Style Gating (SwiGLU):**
+```go
+// Split projection into gate and up
+gate := proj[0:intermediate]
+up := proj[intermediate:2*intermediate]
+
+// Apply SiLU activation to gate, multiply with up
+sigmoid := 1.0 / (1.0 + exp(-gate))
+activated := gate * sigmoid  // SiLU(gate)
+output := activated * up     // GLU gating
+```
+
+**Key Differences from Standard FFN:**
+- Standard: `x -> W1 -> SiLU -> W2`
+- GLU-style: `x -> W1 -> [gate, up] -> SiLU(gate) * up -> W2`
+- The projection is split into two parts that interact
+
+### muP Scaling (Maximal Update Parametrization)
+
+Granite uses muP scaling with separate multipliers for stability:
+
+**Multipliers:**
+- `embedding_multiplier = 12.0` - Scale up embeddings
+- `attention_multiplier = 0.015625` - Scale down attention scores (not residuals!)
+- `residual_multiplier = 0.22` - Scale residual connections (both attention and MoE)
+- `logits_scaling = 6.0` - Scale final logits
+
+**Critical Distinction:**
+- `attention_multiplier` applies to attention **scores** (Q·K scaling), not residual connections
+- `residual_multiplier` applies to **residual connections** for both attention and MoE outputs
+
+**Application:**
+```go
+// Attention scores
+scores = (Q @ K.T) * attention_multiplier
+
+// Residual connections
+x = residual + residual_multiplier * attention_output
+x = residual + residual_multiplier * moe_output
+```
+
+### Debugging Techniques
+
+When model output diverges from reference (PyTorch):
+
+1. **Systematic Layer-by-Layer Comparison:**
+   - Compare embeddings (usually match exactly)
+   - Compare after each normalization
+   - Compare Q, K, V projections
+   - Compare after RoPE
+   - Compare attention output
+   - Compare MoE/FFN output
+   - Compare final logits
+
+2. **Identify Divergence Point:**
+   - Once you find where outputs diverge, focus debugging there
+   - For RoPE: Check cos/sin cache values match PyTorch
+   - For attention: Verify score computation and scaling
+   - For MoE: Verify routing, expert computation, and gating
+
+3. **Common Issues:**
+   - Wrong activation function (SiLU vs GELU, GLU-style vs simple)
+   - Incorrect weight key mapping during loading
+   - Wrong tensor shapes or dimension ordering
+   - Multipliers applied incorrectly (attention scores vs residuals)
+   - RoPE implementation (adjacent pairs vs rotate_half)
+
+### Model Status Summary
+
+**Working (Verified):**
+- ✅ GPT-2 Small/Medium (learned positional embeddings)
+- ✅ Llama 3.2 1B (GQA + RoPE + SwiGLU + RMSNorm)
+- ✅ Granite 3.0 350M (MoE + GQA + RoPE + muP scaling)
+
+**Experimental/Broken:**
+- ⚠️ Falcon 7B (MQA + RoPE) - produces garbage output, needs investigation
+- ⚠️ Mistral 7B - architecture implemented but not fully tested
+
+**Key Learning:** Different models use different variants of similar components. Always verify against reference implementation (PyTorch) when adding new architectures.
+
+---
+
 ## Conclusion
 
 This guide covered:

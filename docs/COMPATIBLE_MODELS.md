@@ -82,32 +82,60 @@ make ask
 
 ---
 
+### Granite 3.0 Models (IBM)
+
+Mixture of Experts architecture with 32 experts and top-8 routing.
+
+| Model | Parameters | Active | Size | Context | Download Command |
+|-------|------------|--------|------|---------|------------------|
+| **Granite 3.0 1B (350M active)** | 1B | 400M | ~1.5GB | 4K | `python3 scripts/download_model.py --model ibm-granite/granite-3.0-1b-a400m-instruct --output ./models/granite-350m` |
+
+**Features**:
+- Mixture of Experts (32 experts, top-8 routing per token)
+- Grouped-Query Attention (16 query heads, 8 KV heads)
+- RoPE position embeddings
+- SwiGLU activation with GLU-style gating
+- muP scaling (attention/residual/logits multipliers)
+- Efficient: Only ~400M parameters active per forward pass
+
+**Usage**:
+```bash
+# Download model
+python3 scripts/download_model.py --model ibm-granite/granite-3.0-1b-a400m-instruct --output ./models/granite-350m
+
+# Build and run
+make ask
+./bin/ask granite "What is the capital of Germany?"
+# Output: The capital of Germany is Berlin. It has been the capital since...
+
+./bin/ask granite "What is 2 + 2?"
+# Output: 2 + 2 equals 4.
+```
+
+**Performance** (Apple M-series):
+- Prefill: ~2.8 tokens/second
+- Decode: ~2.8 tokens/second
+
+**Status**: ✅ Fully working - correctly generates coherent responses
+
+---
+
 ## 🧪 Experimental (Generic Implementation)
 
-### Granite Models (IBM)
+### Granite 4.0 Models (IBM)
 
 Hybrid architecture with Attention + Mamba2 state space models.
 
 | Model | Parameters | Size | Context | Download Command |
 |-------|------------|------|---------|------------------|
-| **Granite 4 Nano 350M** | 350M | ~1.3GB | 32K | `python3 scripts/download_model.py --model ibm-granite/granite-4.0-h-350m --output ./models/granite-350m` |
-| **Granite 4 Nano 1B** | 1B | ~3.8GB | 128K | `python3 scripts/download_model.py --model ibm-granite/granite-4.0-h-1b --output ./models/granite-1b --fp16` |
+| **Granite 4 Nano 350M** | 350M | ~1.3GB | 32K | `python3 scripts/download_model.py --model ibm-granite/granite-4.0-h-350m --output ./models/granite-4h-350m` |
+| **Granite 4 Nano 1B** | 1B | ~3.8GB | 128K | `python3 scripts/download_model.py --model ibm-granite/granite-4.0-h-1b --output ./models/granite-4h-1b --fp16` |
 
 **Features**:
 - Hybrid: 4 attention layers + 28 Mamba2 layers
 - Grouped-Query Attention (GQA)
 - Very long context windows
 - Efficient for long sequences
-
-**Usage**:
-```bash
-# Download model
-python3 scripts/download_model.py --model ibm-granite/granite-4.0-h-350m --output ./models/granite-350m
-
-# Build and run
-make generic-runner
-./bin/generic-runner
-```
 
 **Status**: Experimental - architecture implemented but not fully tested
 
@@ -146,10 +174,13 @@ These architectures have configuration and loading code for educational purposes
 
 | Model | Parameters | Size | Context | Architecture Features |
 |-------|------------|------|---------|----------------------|
-| **Falcon 7B** | 7B | ~14GB | 2048 | MQA, RoPE, Parallel blocks |
-| **Falcon 40B** | 40B | ~80GB | 2048 | MQA, RoPE, Parallel blocks |
+| **Falcon 7B Instruct** | 7B | ~14GB | 2048 | MQA, RoPE, Parallel blocks |
 
-**Key Learning**: Multi-Query Attention (MQA) implementation in `purego/tensor/mqa.go`
+**Features**:
+- Multi-Query Attention (71 query heads, 1 KV head)
+- RoPE position embeddings
+- Parallel attention + FFN blocks
+- LayerNorm, GELU activation
 
 **Usage**:
 ```bash
@@ -161,7 +192,16 @@ make ask
 ./bin/ask falcon "What is the capital of Germany?"
 ```
 
-**Status**: Implemented and working, but slower on CPU (~0.2-0.3 tok/s)
+**Status**: ⚠️ **Experimental - produces garbage output**
+- Configuration correctly detects MQA (1 KV head)
+- RoPE implementation matches PyTorch for GQA models
+- Issue appears specific to Falcon's parallel block architecture
+- Debugging in progress
+
+**Known Issues**:
+- Generates repetitive tokens or special characters instead of coherent text
+- Very slow on CPU (7B parameters, ~0.2 tok/s)
+- May require architecture-specific attention or normalization fixes
 
 ---
 

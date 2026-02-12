@@ -28,10 +28,13 @@ For production LLM inference, please use established frameworks like:
 ## Features
 
 - **Pure Go Implementation** - No Python dependencies, runs natively on any platform
-- **Continuous Batching** - Dynamic batch composition for optimal resource utilization
+- **Multiple Attention Mechanisms** - MHA, GQA, and MQA implementations
+- **RoPE Position Embeddings** - Correct "rotate_half" implementation matching HuggingFace
+- **Mixture of Experts (MoE)** - Sparse expert routing with GLU-style gating
 - **KV Caching** - Key-Value cache for efficient O(N) generation
 - **Block-based Memory Management** - Efficient memory allocation with prefix caching
-- **Real Model Support** - Runs actual GPT-2 models from HuggingFace
+- **Continuous Batching** - Dynamic batch composition for optimal resource utilization
+- **Multiple Model Families** - GPT-2, Llama 3.2, Granite 3.0 fully supported
 
 ## Quick Start
 
@@ -58,8 +61,7 @@ make ask
 # Ask questions with different models
 ./bin/ask gpt2 "The capital city of France is"
 ./bin/ask llama "What is the capital of France?"
-./bin/ask falcon "What is the capital of Germany?"
-./bin/ask granite "What is 2 + 2?"
+./bin/ask granite "What is the capital of Germany?"
 
 # Run the demo
 ./demo_capitals.sh
@@ -100,18 +102,28 @@ make ask
 **Llama 3.2 Family** (Grouped-Query Attention):
 - Llama 3.2 1B/3B Instruct
 - TinyLlama 1.1B Chat
-
-**Falcon Family** (Multi-Query Attention):
-- Falcon 7B Instruct
-- Supports sharded model loading (multi-file safetensors)
-- RoPE position embeddings with MQA
-- Advanced features: GQA, RoPE, SwiGLU, RMSNorm
+- RoPE position embeddings with GQA
+- SwiGLU activation, RMSNorm
 - Python tokenizer integration for accurate BPE
+
+**Granite 3.0 Family** (Mixture of Experts):
+- Granite 3.0 350M/1B (32 experts, top-8 routing, ~400M active)
+- MoE with GLU-style gating (SwiGLU)
+- GQA (16 query heads, 8 KV heads)
+- muP scaling (attention, residual, logits multipliers)
+- RoPE position embeddings
+- Correct output generation verified
 
 ### 🧪 Experimental
 
-- Granite 350M/1B (Hybrid Mamba2 + Attention)
-- Mistral 7B (architecture implemented)
+**Falcon Family** (Multi-Query Attention):
+- Falcon 7B Instruct
+- ⚠️ Currently produces garbage output (debugging in progress)
+- MQA with 71 query heads, 1 KV head
+- Very slow on CPU (7B parameters)
+
+**Other:**
+- Mistral 7B (architecture implemented, not fully tested)
 
 See [docs/COMPATIBLE_MODELS.md](docs/COMPATIBLE_MODELS.md) for detailed information, download instructions, and performance benchmarks.
 
@@ -119,13 +131,18 @@ See [docs/COMPATIBLE_MODELS.md](docs/COMPATIBLE_MODELS.md) for detailed informat
 
 On Apple M-series (no GPU acceleration):
 
-**GPT-2 Small:**
+**GPT-2 Small (124M parameters):**
 - Prefill: ~8 tokens/second
 - Decode: ~6 tokens/second
 
-**Llama 3.2 1B:**
+**Llama 3.2 1B (1B parameters):**
 - Prefill: ~1.5 tokens/second
 - Decode: ~1.7 tokens/second
+
+**Granite 3.0 350M (400M active parameters, MoE):**
+- Prefill: ~2.8 tokens/second
+- Decode: ~2.8 tokens/second
+- Note: Efficient due to sparse expert routing
 
 ## Examples
 
@@ -175,19 +192,23 @@ make ask
 ./bin/ask llama -temp 0.7 -max-tokens 200 "Tell me a story"
 ```
 
-### Using Falcon 7B
+### Using Granite 3.0
 
 ```bash
 # Download and setup
-python3 scripts/download_model.py --model tiiuae/falcon-7b-instruct --output ./models/falcon-7b-instruct --fp16
+python3 scripts/download_model.py --model ibm-granite/granite-3.0-1b-a400m-instruct --output ./models/granite-350m
 make ask
 
 # Ask questions
-./bin/ask falcon "What is the capital of Germany?"
-# Output: Berlin
+./bin/ask granite "What is the capital of Germany?"
+# Output: The capital of Germany is Berlin. It has been the capital since the reunification...
 
-# Note: Falcon 7B is larger and slower on CPU
-# Expect ~0.2-0.3 tokens/sec
+# Math questions
+./bin/ask granite "What is 2 + 2?"
+# Output: 2 + 2 equals 4.
+
+# Note: Granite uses Mixture of Experts (MoE)
+# Prefill: ~2.8 tokens/sec, Decode: ~2.8 tokens/sec
 ```
 
 ### Other Tools

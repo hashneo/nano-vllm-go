@@ -847,6 +847,10 @@ func LoadModelConfig(configPath string) (*ModelConfig, error) {
 	if v, ok := raw["num_kv_heads"].(float64); ok {
 		config.NumKVHeads = int(v)
 	}
+	// Falcon uses multi_query field to indicate MQA (1 KV head)
+	if v, ok := raw["multi_query"].(bool); ok && v {
+		config.NumKVHeads = 1
+	}
 	if v, ok := raw["head_dim"].(float64); ok {
 		config.HeadDim = int(v)
 	}
