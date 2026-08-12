@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3. How the Model "Thinks" &mdash; How LLMs Work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">How LLMs <span>Work</span></a>
+    <span class="crumb">Chapter 3 of 10</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <nav class="stepper" aria-label="Chapters">
+    <a href="01-tokenization.html">1</a>
+    <a href="02-embeddings.html">2</a>
+    <a class="current" href="03-attention.html">3</a>
+    <a href="04-hidden-layers.html">4</a>
+    <a href="05-generation-loop.html">5</a>
+    <a href="06-kv-cache.html">6</a>
+    <a href="07-inference-engine.html">7</a>
+    <a href="08-mamba2.html">8</a>
+    <a href="09-model-evolution.html">9</a>
+    <a href="10-advanced-techniques.html">10</a>
+  </nav>
+
+  <p class="kicker">Chapter 3</p>
+  <h1>How the model "thinks"</h1>
+  <p class="subtitle">
+    This is the heart of it. The mechanism that made modern AI models possible
+    is called <strong>attention</strong>, and &mdash; despite the intimidating name &mdash; the
+    core idea is something you already do naturally when reading a sentence.
+  </p>
+
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      Read this sentence: <em>"The capital city of France is&hellip;"</em> When you get
+      to the word <strong>"is"</strong>, your brain doesn't treat every earlier word
+      as equally important for guessing what comes next. You instinctively give
+      much more weight to <strong>"capital"</strong> and <strong>"France"</strong> than
+      to <strong>"the"</strong> or <strong>"of"</strong> &mdash; those two words are doing
+      almost all the work of narrowing down the answer. That instinctive
+      "which earlier words matter most, right now?" judgment is exactly what
+      attention computes &mdash; just as arithmetic, done for every single word, for
+      every single word that came before it.
+    </p>
+  </div>
+
+  <div class="diagram">
+    <svg viewBox="0 0 640 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The word is looking back at earlier words with different amounts of attention">
+      <style>
+        text{font-family:-apple-system,Helvetica,Arial,sans-serif;fill:var(--ink);}
+        .lbl{font-size:10px;fill:var(--ink-soft);}
+        .word{fill:var(--panel);stroke:var(--border);stroke-width:1.5;}
+        .wordHi{fill:var(--accent-soft);stroke:var(--border);stroke-width:1.5;}
+        .wordtext{font-size:12.5px;font-weight:600;}
+        .lineHi{stroke:var(--accent);fill:none;}
+        .lineLo{stroke:var(--ink-soft);fill:none;opacity:0.35;}
+      </style>
+
+      <!-- word boxes -->
+      <rect x="10"  y="150" width="60" height="34" rx="8" class="word"></rect>
+      <text x="40" y="172" text-anchor="middle" class="wordtext">The</text>
+
+      <rect x="100" y="150" width="90" height="34" rx="8" class="word"></rect>
+      <text x="145" y="172" text-anchor="middle" class="wordtext">capital</text>
+
+      <rect x="220" y="150" width="70" height="34" rx="8" class="word"></rect>
+      <text x="255" y="172" text-anchor="middle" class="wordtext">city</text>
+
+      <rect x="320" y="150" width="55" height="34" rx="8" class="word"></rect>
+      <text x="347" y="172" text-anchor="middle" class="wordtext">of</text>
+
+      <rect x="405" y="150" width="90" height="34" rx="8" class="word"></rect>
+      <text x="450" y="172" text-anchor="middle" class="wordtext">France</text>
+
+      <rect x="530" y="150" width="55" height="34" rx="8" class="wordHi"></rect>
+      <text x="557" y="172" text-anchor="middle" class="wordtext">is</text>
+
+      <!-- attention lines, all originating from "is" -->
+      <path class="lineLo" stroke-width="1.5" d="M557,150 C 450,60 150,60 40,150"></path>
+      <path class="lineHi" stroke-width="5"   d="M557,150 C 480,40 220,40 145,150"></path>
+      <path class="lineLo" stroke-width="1.5" d="M557,150 C 470,80 320,80 255,150"></path>
+      <path class="lineLo" stroke-width="1.5" d="M557,150 C 470,90 380,90 347,150"></path>
+      <path class="lineHi" stroke-width="6"   d="M557,150 C 520,50 480,50 450,150"></path>
+
+      <text x="557" y="30" text-anchor="middle" class="lbl">"is" looks back at every earlier word&#8230;</text>
+      <text x="145" y="120" text-anchor="middle" font-size="10" fill="var(--accent)" font-weight="700">strong</text>
+      <text x="450" y="95" text-anchor="middle" font-size="10" fill="var(--accent)" font-weight="700">strong</text>
+    </svg>
+    <figcaption>Thicker, colored lines = more attention paid. Every word does this for every other word, simultaneously.</figcaption>
+  </div>
+
+  <h2>What's actually inside the spotlight</h2>
+  <p>
+    "Weighs every other word's relevance" is doing a lot of work in that sentence.
+    Concretely, every word's fingerprint gets used in three different roles at
+    once, each with its own name:
+  </p>
+  <ul>
+    <li><strong>Query</strong> &mdash; the question a word is currently asking. "is" carries
+    a query that roughly means "what specific thing am I about to name?"</li>
+    <li><strong>Key</strong> &mdash; the advertisement every word puts out about what it has
+    to offer. "France" carries a key that roughly says "I'm a country, useful for
+    answering location-shaped questions."</li>
+    <li><strong>Value</strong> &mdash; the actual content a word hands over, once it's been
+    picked. If "France"'s key matches "is"'s query well, "France"'s value is what
+    actually flows into "is"'s understanding.</li>
+  </ul>
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      Like a library reference desk. You arrive with a question (your
+      <strong>query</strong>). Every book on the shelf has a spine label summarizing
+      what it's about (its <strong>key</strong>). You scan spines for the best match to
+      your question &mdash; that's the "how much attention" score from the diagram
+      above. Whichever books match well, you actually pull off the shelf and read
+      (their <strong>value</strong>) &mdash; books with a poor match stay on the shelf,
+      contributing little or nothing.
+    </p>
+  </div>
+  <p>
+    A model doesn't do this just once. It runs this whole query/key/value match-up,
+    for every word against every other word, then hands the improved understanding
+    to another identical step &mdash; a whole separate round of look-around-and-update.
+    Each of these rounds is called a <strong>layer</strong>. GPT-2 Small has <strong>12</strong>
+    of them stacked on top of each other; bigger models have many more. What
+    actually happens to a word's fingerprint as it passes through that stack is
+    the whole subject of the next chapter.
+  </p>
+
+  <div class="example">
+    <span class="tag">Why "attention" was such a big deal</span>
+    <p style="margin:0;">
+      Older approaches to this problem read a sentence strictly left-to-right, one
+      word at a time, and tended to "forget" words that appeared too far back.
+      Attention instead lets every word directly connect to every other word in
+      one step, no matter how far apart they are &mdash; which is a big part of why
+      today's models are so much better at handling long, complicated instructions
+      than what came before them.
+    </p>
+  </div>
+
+  <div class="codepath">
+    <span class="tag">Under the hood</span>
+    Query/Key/Value projections and the attention math live in
+    <code>purego/tensor/attention.go</code> (plus <code>mqa.go</code> for the
+    multi-query variant). The 12-layer stack for GPT-2 is built in
+    <code>purego/tensor/model.go</code>, using the <code>NumLayers</code> field
+    from <code>NewGPT2Config()</code> in <code>purego/tensor/config.go</code>.
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="02-embeddings.html"><span class="dir">&larr; Back</span>Giving numbers meaning</a>
+    <a class="next" href="04-hidden-layers.html"><span class="dir">Next</span>How understanding accumulates &rarr;</a>
+  </nav>
+</main>
+</body>
+</html>

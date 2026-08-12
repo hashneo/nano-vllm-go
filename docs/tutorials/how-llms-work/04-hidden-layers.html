@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4. The Residual Stream &mdash; How LLMs Work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">How LLMs <span>Work</span></a>
+    <span class="crumb">Chapter 4 of 10</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <nav class="stepper" aria-label="Chapters">
+    <a href="01-tokenization.html">1</a>
+    <a href="02-embeddings.html">2</a>
+    <a href="03-attention.html">3</a>
+    <a class="current" href="04-hidden-layers.html">4</a>
+    <a href="05-generation-loop.html">5</a>
+    <a href="06-kv-cache.html">6</a>
+    <a href="07-inference-engine.html">7</a>
+    <a href="08-mamba2.html">8</a>
+    <a href="09-model-evolution.html">9</a>
+    <a href="10-advanced-techniques.html">10</a>
+  </nav>
+
+  <p class="kicker">Chapter 4</p>
+  <h1>How understanding accumulates, layer by layer</h1>
+  <p class="subtitle">
+    Chapter 3 showed attention as a spotlight, repeated across 12 stacked layers.
+    This chapter opens up what's actually happening to each word's "fingerprint"
+    as it passes through that stack &mdash; and reveals that attention is only
+    <em>half</em> of what each layer does.
+  </p>
+
+  <h2>The same notebook page, annotated over and over</h2>
+  <p>
+    Here's the key idea to hold onto: each token's fingerprint from Chapter 2
+    &mdash; that list of 768 numbers, for GPT-2 &mdash; is <strong>never replaced</strong> as it
+    moves through the 12 layers. It's the same page the whole way through. Every
+    layer reads it, figures out a small correction worth making, and
+    <strong>adds that correction directly onto the existing numbers</strong>. Layer 2
+    doesn't start fresh from layer 1's output as if it were brand new input &mdash; it
+    keeps building on the same running total.
+  </p>
+  <p>
+    This running total has a name: the <strong>residual stream</strong> (also called
+    the <strong>hidden state</strong>). "Hidden" doesn't mean secret or mysterious &mdash;
+    it just means it's an internal, in-progress value the model works with, as
+    opposed to the token IDs going in or the final scoreboard coming out.
+  </p>
+
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      Picture a single index card for the word "capital," and 12 editors sitting
+      in a row. The card never gets copied or replaced &mdash; it's physically passed
+      down the row. Each editor reads whatever is currently written on it, thinks
+      for a moment, and <em>adds a short note in the margin</em> &mdash; never crosses
+      anything out. By the time the card reaches editor 12, it still has room 1's
+      original observations on it, plus eleven more rounds of annotations layered
+      on top. That fully-annotated card is what finally gets used to guess the next
+      word.
+    </p>
+  </div>
+
+  <h2>Each layer's second half: thinking alone, after talking together</h2>
+  <p>
+    Chapter 3's attention step is how a word's note-card learns from every
+    <em>other</em> word's note-card. But every layer in this project's models
+    has a second, quieter step right after attention, called the
+    <strong>feed-forward network</strong> (FFN, sometimes called an MLP). Unlike
+    attention, the FFN looks at only <em>one</em> word's card at a time, with no
+    peeking at anyone else's.
+  </p>
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      If attention is "the room compares notes out loud," the FFN is "each person
+      goes back to their desk and updates their own notes based on what they just
+      heard." Attention <em>shares</em> information across words; the FFN
+      <em>processes</em> what a word now knows, on its own. A transformer layer is
+      always this pair, back to back &mdash; gather from everyone, then think alone
+      &mdash; repeated 12 times over for GPT-2 Small.
+    </p>
+  </div>
+  <p>
+    That "think alone" step involves a deliberately non-straightforward
+    calculation called an <strong>activation function</strong> &mdash; without getting
+    into the arithmetic, its job is to let the FFN represent richer, more
+    curved patterns than plain addition and averaging ever could. GPT-2 uses one
+    called <strong>GELU</strong>; most of the newer models in this project (Llama,
+    Falcon, Granite) use a more modern variant called <strong>SwiGLU</strong> instead,
+    which tends to squeeze more useful "thinking" out of the same amount of
+    compute &mdash; one of several small upgrades that add up across a modern model.
+  </p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 620 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="One token's vector flows down through repeated attention and feed-forward additions, never being replaced">
+      <style>
+        text{font-family:-apple-system,Helvetica,Arial,sans-serif;fill:var(--ink);}
+        .lbl{font-size:10.5px;fill:var(--ink-soft);}
+        .stream{stroke:var(--border);stroke-width:3;fill:none;}
+        .plus{fill:var(--panel);stroke:var(--ink-soft);stroke-width:1.5;}
+        .plustext{font-size:13px;fill:var(--ink-soft);font-weight:700;}
+        .stepbox{fill:var(--panel);stroke:var(--border);stroke-width:1.5;}
+        .attnbox{fill:var(--accent-soft);stroke:var(--border);stroke-width:1.5;}
+        .ffnbox{fill:var(--accent2-soft);stroke:var(--border);stroke-width:1.5;}
+        .arrow{stroke:var(--ink-soft);stroke-width:1.5;fill:none;}
+      </style>
+
+      <line x1="90" y1="15" x2="90" y2="285" class="stream"></line>
+      <text x="90" y="8" text-anchor="middle" class="lbl">RESIDUAL STREAM (768 numbers, same the whole way down)</text>
+
+      <rect x="10" y="20" width="150" height="26" rx="6" class="stepbox"></rect>
+      <text x="85" y="38" text-anchor="middle" font-size="11.5">Token's fingerprint</text>
+
+      <line x1="90" y1="46" x2="90" y2="68" class="arrow"></line>
+      <circle cx="90" cy="80" r="13" class="plus"></circle>
+      <text x="90" y="85" text-anchor="middle" class="plustext">+</text>
+      <rect x="230" y="66" width="150" height="28" rx="6" class="attnbox"></rect>
+      <text x="305" y="84" text-anchor="middle" font-size="11.5" font-weight="700">Layer 1: Attention</text>
+      <line x1="228" y1="80" x2="106" y2="80" class="arrow"></line>
+
+      <line x1="90" y1="93" x2="90" y2="118" class="arrow"></line>
+      <circle cx="90" cy="130" r="13" class="plus"></circle>
+      <text x="90" y="135" text-anchor="middle" class="plustext">+</text>
+      <rect x="230" y="116" width="150" height="28" rx="6" class="ffnbox"></rect>
+      <text x="305" y="134" text-anchor="middle" font-size="11.5" font-weight="700">Layer 1: FFN</text>
+      <line x1="228" y1="130" x2="106" y2="130" class="arrow"></line>
+
+      <text x="90" y="168" text-anchor="middle" class="lbl" font-size="16" fill="var(--ink-soft)">&#8942;</text>
+      <text x="230" y="168" class="lbl">&#8230; repeated 12 times total for GPT-2 Small</text>
+
+      <line x1="90" y1="180" x2="90" y2="205" class="arrow"></line>
+      <circle cx="90" cy="217" r="13" class="plus"></circle>
+      <text x="90" y="222" text-anchor="middle" class="plustext">+</text>
+      <rect x="230" y="203" width="150" height="28" rx="6" class="attnbox"></rect>
+      <text x="305" y="221" text-anchor="middle" font-size="11.5" font-weight="700">Layer 12: Attention</text>
+      <line x1="228" y1="217" x2="106" y2="217" class="arrow"></line>
+
+      <line x1="90" y1="230" x2="90" y2="252" class="arrow"></line>
+      <circle cx="90" cy="264" r="13" class="plus"></circle>
+      <text x="90" y="269" text-anchor="middle" class="plustext">+</text>
+      <rect x="230" y="250" width="150" height="28" rx="6" class="ffnbox"></rect>
+      <text x="305" y="268" text-anchor="middle" font-size="11.5" font-weight="700">Layer 12: FFN</text>
+      <line x1="228" y1="264" x2="106" y2="264" class="arrow"></line>
+
+      <line x1="90" y1="277" x2="90" y2="285" class="arrow"></line>
+      <text x="90" y="298" text-anchor="middle" class="lbl">final, fully-annotated fingerprint &rarr;</text>
+    </svg>
+    <figcaption>Each "+" is a real addition: the layer's output gets added onto the running vector, never replacing it &mdash; this is why it's called a residual connection.</figcaption>
+  </div>
+
+  <h2>Two different ways to make a model bigger</h2>
+  <p>
+    With this picture in mind, "model size" splits into two genuinely different
+    knobs, and it's worth being able to tell them apart:
+  </p>
+  <ul>
+    <li><strong>Width (hidden size)</strong> &mdash; how many numbers are on each note card.
+    GPT-2 Small uses 768; Llama-7B uses 4096. A wider card can hold more nuance
+    per word, at each and every layer.</li>
+    <li><strong>Depth (number of layers)</strong> &mdash; how many editors sit in the row.
+    GPT-2 Small uses 12; Llama-7B uses 32. More layers means more rounds of
+    "gather from everyone, then think alone," which tends to build up more
+    sophisticated reasoning.</li>
+  </ul>
+  <p>
+    Real models scale up both together, but they're independent choices &mdash; and
+    it's why two models with the same parameter count can behave differently
+    depending on whether they lean wide-and-shallow or narrow-and-deep.
+  </p>
+
+  <div class="example">
+    <span class="tag">Where we are so far</span>
+    <p style="margin:0;">
+      Our sentence's six fingerprints have now each been annotated twelve times
+      over &mdash; once by attention comparing them to each other, once by an FFN
+      thinking about each one alone &mdash; per layer. What comes out the other end
+      of layer 12 is what Chapter 5 turns into an actual next-token guess.
+    </p>
+  </div>
+
+  <div class="codepath">
+    <span class="tag">Under the hood</span>
+    The residual add pattern and the GELU/SwiGLU switch are implemented in
+    <code>TransformerBlock.Forward()</code> and <code>FeedForward.Forward()</code>
+    in <code>purego/tensor/transformer.go</code>. Hidden size and layer count are
+    the <code>Hidden</code> and <code>NumLayers</code> fields on <code>ModelConfig</code>
+    in <code>purego/tensor/config.go</code>.
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="03-attention.html"><span class="dir">&larr; Back</span>How the model "thinks"</a>
+    <a class="next" href="05-generation-loop.html"><span class="dir">Next</span>Writing the answer &rarr;</a>
+  </nav>
+</main>
+</body>
+</html>

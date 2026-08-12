@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6. The KV Cache &mdash; How LLMs Work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">How LLMs <span>Work</span></a>
+    <span class="crumb">Chapter 6 of 10</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <nav class="stepper" aria-label="Chapters">
+    <a href="01-tokenization.html">1</a>
+    <a href="02-embeddings.html">2</a>
+    <a href="03-attention.html">3</a>
+    <a href="04-hidden-layers.html">4</a>
+    <a href="05-generation-loop.html">5</a>
+    <a class="current" href="06-kv-cache.html">6</a>
+    <a href="07-inference-engine.html">7</a>
+    <a href="08-mamba2.html">8</a>
+    <a href="09-model-evolution.html">9</a>
+    <a href="10-advanced-techniques.html">10</a>
+  </nav>
+
+  <p class="kicker">Chapter 6</p>
+  <h1>The KV cache: remembering without re-reading</h1>
+  <p class="subtitle">
+    Look back at Chapter 5's decode loop: after picking <strong>" Paris"</strong>,
+    the model has to run again to guess the next token. Naively, that means
+    re-processing the entire sentence <em>plus</em> "Paris" through all 12 layers
+    from scratch &mdash; repeating work it already did a moment ago. This chapter is
+    about the fix, and exactly what it does and doesn't remember.
+  </p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Without a cache every step reprocesses everything, with a cache each step only processes the new word">
+      <style>
+        text{font-family:-apple-system,Helvetica,Arial,sans-serif;fill:var(--ink);}
+        .lbl{font-size:10.5px;fill:var(--ink-soft);}
+        .old{fill:var(--chip);stroke:var(--border);stroke-width:1.2;}
+        .new{fill:var(--accent);stroke:var(--accent);}
+        .cache{fill:var(--accent2-soft);stroke:var(--accent2);stroke-width:1.2;}
+      </style>
+
+      <text x="10" y="18" font-weight="700" font-size="12">Without a cache:</text>
+      <g>
+        <rect x="10" y="30" width="26" height="22" rx="4" class="old"></rect>
+        <rect x="40" y="30" width="26" height="22" rx="4" class="old"></rect>
+        <rect x="70" y="30" width="26" height="22" rx="4" class="old"></rect>
+        <rect x="100" y="30" width="26" height="22" rx="4" class="old"></rect>
+        <rect x="130" y="30" width="26" height="22" rx="4" class="old"></rect>
+        <rect x="160" y="30" width="26" height="22" rx="4" class="old"></rect>
+        <rect x="190" y="30" width="26" height="22" rx="4" class="new"></rect>
+      </g>
+      <text x="300" y="45" class="lbl">&uarr; re-reads all 7 tokens just to add 1 more word</text>
+
+      <text x="10" y="90" font-weight="700" font-size="12">With a KV cache:</text>
+      <rect x="10" y="102" width="176" height="22" rx="4" class="cache"></rect>
+      <text x="98" y="118" text-anchor="middle" font-size="10.5" fill="var(--accent2)" font-weight="700">already in the notebook</text>
+      <rect x="190" y="102" width="26" height="22" rx="4" class="new"></rect>
+      <text x="330" y="118" class="lbl">&uarr; only the 1 new word gets processed</text>
+    </svg>
+    <figcaption>The KV cache is the single biggest reason modern chat responses stream out quickly instead of getting slower with every word.</figcaption>
+  </div>
+
+  <p>
+    The fix is called a <strong>KV cache</strong>, short for "key/value cache" &mdash; a
+    direct reference to the <strong>Key</strong> and <strong>Value</strong> roles from
+    Chapter 3's attention spotlight. The engine keeps a running notebook of every
+    earlier token's Key and Value, per layer, so each new token only ever needs
+    to be processed once.
+  </p>
+
+  <h2>Why only Key and Value &mdash; not Query</h2>
+  <p>
+    This is the detail people usually skip, and it's worth getting precisely
+    right, because it explains the name. Recall the library-desk analogy: your
+    <strong>Query</strong> is the question you bring right now; a book's
+    <strong>Key</strong> is its spine label; a book's <strong>Value</strong> is what's
+    actually inside it. A token's Query is only ever needed <em>once</em> &mdash; at
+    the exact moment it's the newest word asking "what matters to me?" Once
+    that moment passes, its Query is never consulted again. But that same
+    token's Key and Value get <em>re-checked by every single word that comes
+    after it</em>, for the rest of the conversation. So Query is used-and-discarded;
+    Key and Value are the only things worth holding onto &mdash; hence, <em>K/V</em>
+    cache, not KVQ cache.
+  </p>
+
+  <div class="example">
+    <span class="tag">Tracing it through our real example</span>
+    <p style="margin:0;">
+      Prefill processes all 6 prompt tokens at once and stores a Key and Value for
+      each of them &mdash; the cache now holds <strong>6</strong> entries per layer. The
+      model picks <strong>" Paris"</strong> (id <code>6342</code>). Decode step 1 feeds
+      <em>only</em> "Paris" back in: it computes Paris's Key and Value and appends
+      them &mdash; the cache now holds <strong>7</strong> entries &mdash; while Paris's Query
+      checks itself against all 7 (the 6 old entries plus its own) to guess the
+      next token, <strong>"."</strong> (id <code>13</code>). Decode step 2 feeds in
+      just ".", growing the cache to <strong>8</strong> entries, and predicts the
+      stop token. Notice: every step computes exactly one new Key/Value pair and
+      reuses everything before it.
+    </p>
+  </div>
+
+  <h2>What's actually sitting in the notebook</h2>
+  <p>
+    "A Key and Value per token" is short for something more specific: this
+    project stores one Key vector and one Value vector <strong>per attention
+    head, per layer, per token</strong>. GPT-2 Small has 12 layers and 12 heads
+    per layer, so a single token's entry isn't one pair of numbers &mdash; it's
+    144 small pairs (12&nbsp;&times;&nbsp;12), each 64 numbers long (GPT-2's head
+    size). That adds up fast, and it's why the cache is measured in real memory,
+    not just an abstract "notebook":
+  </p>
+  <div class="example">
+    <span class="tag">A real, if small, number</span>
+    <p style="margin:0;">
+      12 layers &times; 12 heads &times; 64 numbers-per-head = 9,216 numbers for Keys,
+      and another 9,216 for Values &mdash; <strong>18,432 numbers per token</strong>. This
+      project stores every number as a 4-byte value, so that's roughly
+      <strong>72 KB of cache for a single token</strong>, on a genuinely small,
+      1990s-arcade-game-sized model. Scale up to a modern model with more layers,
+      more heads, and a bigger head size, and per-token cache cost climbs into
+      the hundreds of kilobytes &mdash; multiplied by every token in every active
+      conversation, simultaneously. This is why cache size, not raw model
+      cleverness, is often the thing that actually limits how long a conversation
+      or how many simultaneous users an engine can afford.
+    </p>
+  </div>
+
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      It's less like one notebook and more like 144 separate index-card trays
+      (12 layers &times; 12 spotlights each) &mdash; and every single token you've said
+      or the model has said gets a new card filed into <em>every one</em> of those
+      144 trays. The trays never shrink. They only ever gain more cards, for as
+      long as the conversation continues.
+    </p>
+  </div>
+
+  <p>
+    That "never shrink" property is exactly what Chapter 7's context window is
+    a limit on, and exactly the problem Chapter 8's Mamba2 layers solve in a
+    completely different way &mdash; worth keeping in mind as you read on.
+  </p>
+
+  <div class="codepath">
+    <span class="tag">Under the hood</span>
+    The cache itself is <code>KVCache</code> in <code>purego/tensor/kv_cache.go</code>
+    &mdash; one <code>Keys[layer]</code> and <code>Values[layer]</code> tensor per layer,
+    shaped <code>[batch, num_heads, seq_len, head_dim]</code>. It's read and appended
+    to inside <code>MultiHeadAttention.ForwardWithCache()</code> in
+    <code>purego/tensor/attention.go</code> on every forward pass.
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="05-generation-loop.html"><span class="dir">&larr; Back</span>Writing the answer</a>
+    <a class="next" href="07-inference-engine.html"><span class="dir">Next</span>The engine room &rarr;</a>
+  </nav>
+</main>
+</body>
+</html>

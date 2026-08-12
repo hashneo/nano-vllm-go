@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10. Different Brains, Different Tricks &mdash; How LLMs Work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">How LLMs <span>Work</span></a>
+    <span class="crumb">Chapter 10 of 10</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <nav class="stepper" aria-label="Chapters">
+    <a href="01-tokenization.html">1</a>
+    <a href="02-embeddings.html">2</a>
+    <a href="03-attention.html">3</a>
+    <a href="04-hidden-layers.html">4</a>
+    <a href="05-generation-loop.html">5</a>
+    <a href="06-kv-cache.html">6</a>
+    <a href="07-inference-engine.html">7</a>
+    <a href="08-mamba2.html">8</a>
+    <a href="09-model-evolution.html">9</a>
+    <a class="current" href="10-advanced-techniques.html">10</a>
+  </nav>
+
+  <p class="kicker">Chapter 10</p>
+  <h1>Different brains, different tricks</h1>
+  <p class="subtitle">
+    Chapters 1&ndash;9 described the universal shape every modern language model
+    follows, one major structural alternative (Mamba2), and the historical
+    lineage that got us here. This closing chapter mops up the remaining
+    variations &mdash; different ways models handle <em>who shares what</em> inside
+    attention, position encoding, making a model bigger without slowing every
+    token down, and squeezing more speed out of the hardware itself. No need to
+    memorize the acronyms, just the idea behind each one.
+  </p>
+
+  <h2>How many "assistants" pay attention at once</h2>
+  <p>
+    Chapter 3 described attention as one spotlight. In reality, a model runs
+    several spotlights side by side per layer &mdash; GPT-2 Small uses 12 of them at
+    once, each one allowed to notice a different kind of relationship (one might
+    specialize in "who's the subject," another in "what's the location," etc.).
+    Each spotlight is called a <strong>head</strong>. The question that varies by
+    model family is: does every single head get its <em>own</em> full notebook
+    entry in the KV cache, or do several heads <em>share</em> one?
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <tr><th>Approach</th><th>Idea</th><th>Used by, in this project</th></tr>
+      <tr><td><strong>MHA</strong> (Multi-Head)</td><td>Every head keeps its own full notebook &mdash; most thorough, most memory.</td><td>GPT-2</td></tr>
+      <tr><td><strong>GQA</strong> (Grouped-Query)</td><td>Heads are put into small groups that share one notebook &mdash; a good middle ground.</td><td>Llama 3.2, Granite 3.0/4.0</td></tr>
+      <tr><td><strong>MQA</strong> (Multi-Query)</td><td>Every head shares just <em>one</em> notebook &mdash; cheapest on memory.</td><td>Falcon-7B</td></tr>
+    </table>
+  </div>
+  <p>
+    None of these change what the model can understand &mdash; they change how much
+    memory the KV cache from Chapter 6 needs per token, which is why newer, bigger
+    models increasingly favor GQA: it keeps most of MHA's quality while using
+    noticeably less memory per stored token.
+  </p>
+
+  <h2>Doing the same math without the wasted trips</h2>
+  <p>
+    MHA/GQA/MQA change <em>how much</em> gets stored and moved around. A separate
+    technique called <strong>FlashAttention</strong> speeds up the attention math
+    itself without changing what it computes at all &mdash; same exact result, done
+    faster. Chapter 3's attention step involves a large, temporary
+    grid of "how much does every word attend to every other word" scores. A
+    naive implementation (which is what this educational project uses) writes
+    that entire grid out to memory, then reads it all back to combine it with
+    the Values. For long sequences, that grid gets huge, and shuffling it in and
+    out of memory becomes the actual bottleneck &mdash; slower than the arithmetic
+    itself.
+  </p>
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      Imagine calculating a big spreadsheet formula by writing every intermediate
+      column to paper, then reading each one back to compute the next column.
+      FlashAttention is the equivalent of doing the whole calculation in your
+      head in one pass, in small chunks, and only writing down the final answer
+      &mdash; same arithmetic, same result, far less time spent on writing and
+      reading. It's a change to <em>how</em> the computation is organized on real
+      hardware, not to the underlying math from Chapter 3 at all.
+    </p>
+  </div>
+  <p>
+    This project doesn't implement FlashAttention &mdash; its attention code favors
+    being easy to read over being fast &mdash; but essentially every production
+    inference engine (including real vLLM) uses some form of it, which is why
+    it's worth knowing the name.
+  </p>
+
+  <h2>Fixed seating chart, or a compass?</h2>
+  <p>
+    Chapter 2 mentioned two ways to tell a model where a token sits in the
+    sentence. GPT-2's fixed numbered-chair approach hits a hard wall at 1,024
+    tokens &mdash; chair 1,025 simply doesn't exist. <strong>RoPE</strong>, used by
+    Falcon, Llama, and Granite 3.0 in this project, works more like a compass
+    bearing between any two tokens, computed by a formula rather than looked up
+    in a fixed table &mdash; which is what makes it possible to stretch a model's usable
+    length well past what it was originally trained on, with some loss of
+    sharpness the further you stretch it. Granite 4.0 goes a step further and uses
+    <strong>no</strong> explicit position signal at all in most of its layers &mdash; because,
+    as the next trick explains, it tracks order a completely different way.
+  </p>
+
+  <h2>A panel of specialists instead of one generalist</h2>
+  <p>
+    Every layer we've described so far runs its full "thinking" step on every
+    single token. <strong>Mixture-of-Experts (MoE)</strong>, used by Granite 3.0 in
+    this project, tries something different: instead of one big general-purpose
+    thinking step, it keeps a whole panel of smaller specialist sub-networks
+    (Granite 3.0 has 32 of them) and, for each individual token, only consults a
+    handful of the most relevant specialists (8, in Granite 3.0's case) rather
+    than all 32.
+  </p>
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      Like a hospital with 32 specialists on staff, but any one patient only
+      actually sees the 8 most relevant to their symptoms. The hospital
+      <em>as a whole</em> is huge and highly capable, but each individual visit
+      only uses a fraction of that total capacity &mdash; which is exactly why Granite
+      3.0 is described as "1B parameters, 400M active": the full panel is there,
+      but a much smaller slice actually does the work for any given token.
+    </p>
+  </div>
+
+  <div class="codepath">
+    <span class="tag">Already covered</span>
+    Granite 4.0's biggest structural difference &mdash; replacing most KV-cache
+    layers with fixed-size <strong>Mamba2</strong> state-space layers &mdash; got a full
+    chapter of its own rather than a paragraph here. See
+    <a href="08-mamba2.html">Chapter 8</a> if you skipped ahead.
+  </div>
+
+  <h2>Making every number take up less room</h2>
+  <p>
+    Way back in Chapter 2, every fingerprint number was stored with a certain
+    amount of precision &mdash; this project always uses 32-bit numbers (called
+    <strong>FP32</strong>), giving each individual number 4 bytes of storage,
+    whether it's a weight, an embedding, or a Chapter 6 KV cache entry.
+    <strong>Quantization</strong> is the technique of storing those same numbers
+    with deliberately <em>less</em> precision &mdash; 16-bit (<strong>FP16</strong>),
+    or even 8-bit or 4-bit integers (<strong>INT8</strong>, <strong>INT4</strong>) &mdash;
+    to shrink memory use, sometimes dramatically.
+  </p>
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      Like rounding $19.9743 to $20 on a receipt. You lose a little precision,
+      but for most purposes the rounded number works exactly as well, and takes
+      far less room to write down. INT4 is a much more aggressive round than
+      FP16 &mdash; more precision lost, but up to 8&times; less storage than FP32 for
+      the exact same numbers.
+    </p>
+  </div>
+  <p>
+    This matters enormously in practice: it's the difference between needing to
+    fit a model's weights in, say, 28&nbsp;GB of memory at FP32 versus roughly
+    7&nbsp;GB at INT8 for the exact same model &mdash; often with barely any
+    noticeable quality loss, because neural networks tend to be fairly tolerant
+    of small rounding errors spread across billions of numbers. Popular
+    real-world methods include <strong>GPTQ</strong> and <strong>AWQ</strong> (ways of
+    deciding <em>how</em> to round a model's weights after training) and
+    <strong>GGML/GGUF</strong> (the quantized format used by
+    <code>llama.cpp</code>). This project always uses plain FP32 &mdash; simplicity
+    over efficiency, true to its educational goal &mdash; which is a real part of
+    why the practical parameter ceiling on ordinary hardware is smaller here
+    than it would be for a quantization-aware engine running the same models.
+  </p>
+
+  <h2>Putting it all together</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Model family</th><th>Attention</th><th>Position</th><th>Chat template?</th><th>Notable extra</th></tr>
+      <tr><td>GPT-2 (2019)</td><td>MHA</td><td>Fixed chart (max 1,024)</td><td>No &mdash; base/completion only</td><td>&mdash;</td></tr>
+      <tr><td>Falcon-7B-Instruct</td><td>MQA</td><td>RoPE</td><td>Yes &mdash; <code>User: ... Assistant:</code></td><td>&mdash;</td></tr>
+      <tr><td>Llama 3.2-Instruct</td><td>GQA</td><td>RoPE</td><td>Yes &mdash; header-tagged turns</td><td>&mdash;</td></tr>
+      <tr><td>Granite 3.0-Instruct</td><td>GQA</td><td>RoPE</td><td>Yes &mdash; role tags</td><td>Mixture-of-Experts</td></tr>
+      <tr><td>Granite 4.0</td><td>GQA (a few layers)</td><td>None (most layers)</td><td>Yes &mdash; role tags</td><td>Mamba2 hybrid, 128K context (Ch. 8)</td></tr>
+    </table>
+  </div>
+
+  <div class="recap">
+    <h3 style="margin-top:0;">The whole journey, recapped</h3>
+    <ol>
+      <li><strong>Tokenization</strong> &mdash; your sentence is chopped into tokens, plain numbers from a fixed vocabulary.</li>
+      <li><strong>Embeddings</strong> &mdash; each token becomes a fingerprint capturing meaning, plus a signal for its position in the sentence.</li>
+      <li><strong>Attention</strong> &mdash; every token compares its Query against every other token's Key, and pulls in their Value in proportion to the match.</li>
+      <li><strong>The residual stream</strong> &mdash; that comparison-plus-private-thinking (FFN) step repeats across many stacked layers, each one adding refinements onto the same running fingerprint rather than starting over.</li>
+      <li><strong>The generation loop</strong> &mdash; the model outputs one ranked guess for the next token at a time; the engine picks one, appends it, and loops &mdash; prefill once, then decode repeatedly. Modern chat models first wrap your question in a <strong>chat template</strong> so that loop produces a conversation instead of finishing a sentence.</li>
+      <li><strong>The KV cache</strong> &mdash; the engine remembers every earlier token's Key and Value so it never has to reprocess them, at the cost of memory that grows with the conversation.</li>
+      <li><strong>The inference engine</strong> &mdash; a context window bounds how much the cache can grow, and a scheduler with block-based paging serves many conversations at once.</li>
+      <li><strong>Mamba2</strong> &mdash; some modern layers replace the ever-growing KV cache with a fixed-size running state, trading some precision for cost that never grows.</li>
+      <li><strong>The GPT lineage</strong> &mdash; GPT-3 was pure scale, ChatGPT added instruction tuning and RLHF on top of Chapter 5's chat templates, GPT-4 likely added MoE, and o1 just runs Chapter 5's same decode loop for longer before answering.</li>
+    </ol>
+    <p style="margin:0.8rem 0 0; color:var(--ink-soft); font-size:0.9rem;">
+      And on this page: the smaller variations &mdash; <strong>MHA/GQA/MQA</strong>,
+      <strong>FlashAttention</strong>, <strong>RoPE</strong>, <strong>MoE</strong>, and
+      <strong>quantization</strong> &mdash; that different model families and engines mix
+      into that same overall shape.
+    </p>
+  </div>
+
+  <p>
+    Want to see this run for real? This project's own README has the commands to
+    download GPT-2 and try it yourself:
+  </p>
+  <div class="example">
+    <span class="tag">Try it yourself</span>
+    <p style="margin:0;">
+      <code>python3 scripts/download_model.py --model gpt2 --output ./models/gpt2-small</code><br>
+      <code>make ask</code><br>
+      <code>./bin/ask gpt2 "The capital city of France is"</code>
+    </p>
+  </div>
+  <p>
+    For more detail than this tutorial goes into, see
+    <code>docs/ARCHITECTURE_GUIDE.md</code> and <code>docs/COMPATIBLE_MODELS.md</code>
+    in this repository.
+  </p>
+
+  <nav class="pager">
+    <a class="prev" href="09-model-evolution.html"><span class="dir">&larr; Back</span>From GPT-2 to today</a>
+    <a class="next" href="index.html"><span class="dir">Done</span>Back to start &rarr;</a>
+  </nav>
+</main>
+</body>
+</html>

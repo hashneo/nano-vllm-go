@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>9. From GPT-2 to Today &mdash; How LLMs Work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">How LLMs <span>Work</span></a>
+    <span class="crumb">Chapter 9 of 10</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <nav class="stepper" aria-label="Chapters">
+    <a href="01-tokenization.html">1</a>
+    <a href="02-embeddings.html">2</a>
+    <a href="03-attention.html">3</a>
+    <a href="04-hidden-layers.html">4</a>
+    <a href="05-generation-loop.html">5</a>
+    <a href="06-kv-cache.html">6</a>
+    <a href="07-inference-engine.html">7</a>
+    <a href="08-mamba2.html">8</a>
+    <a class="current" href="09-model-evolution.html">9</a>
+    <a href="10-advanced-techniques.html">10</a>
+  </nav>
+
+  <p class="kicker">Chapter 9</p>
+  <h1>From GPT-2 to today: what actually changed</h1>
+  <p class="subtitle">
+    Every mechanic in Chapters 1&ndash;6 was taught using GPT-2, a real, small,
+    5-year-old model. This chapter is the history lesson: what OpenAI actually
+    changed, release by release, to get from that same GPT-2 architecture to
+    ChatGPT, GPT-4, and reasoning models like o1 &mdash; and, importantly, which of
+    those changes you've already learned and which are genuinely new.
+  </p>
+
+  <div class="codepath">
+    <span class="tag">A note on this chapter</span>
+    Every other chapter in this tutorial is grounded in code you can actually run
+    in this project. This one isn't, on purpose: GPT-3, ChatGPT, GPT-4, and o1 are
+    closed, proprietary models with no public weights or source &mdash; nothing to
+    point you at. What follows is public information about what changed, not
+    this project's implementation of it. Chapter 10 comes back to real, runnable
+    code &mdash; covering Llama, Falcon, and Granite, a separate, <em>open</em> lineage
+    that evolved in parallel to the one below.
+  </div>
+
+  <div class="diagram">
+    <svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Timeline from GPT-2 through GPT-5, with GPT-2 marked as the model this tutorial runs">
+      <style>
+        text{font-family:-apple-system,Helvetica,Arial,sans-serif;fill:var(--ink);}
+        .lbl{font-size:9.5px;fill:var(--ink-soft);}
+        .box{fill:var(--panel);stroke:var(--border);stroke-width:1.5;}
+        .here{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.5;}
+        .arrow{stroke:var(--ink-soft);stroke-width:1.5;fill:none;}
+        .arrowhead{fill:var(--ink-soft);}
+      </style>
+      <defs>
+        <marker id="arrow3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path class="arrowhead" d="M0,0 L10,5 L0,10 z"></path>
+        </marker>
+      </defs>
+
+      <rect x="8" y="20" width="90" height="54" rx="8" class="here"></rect>
+      <text x="53" y="40" text-anchor="middle" font-weight="700" font-size="12">GPT-2</text>
+      <text x="53" y="53" text-anchor="middle" class="lbl">2019</text>
+      <text x="53" y="65" text-anchor="middle" class="lbl">base architecture</text>
+
+      <line x1="98" y1="47" x2="122" y2="47" class="arrow" marker-end="url(#arrow3)"></line>
+      <rect x="124" y="20" width="90" height="54" rx="8" class="box"></rect>
+      <text x="169" y="40" text-anchor="middle" font-weight="700" font-size="12">GPT-3</text>
+      <text x="169" y="53" text-anchor="middle" class="lbl">2020</text>
+      <text x="169" y="65" text-anchor="middle" class="lbl">just scale</text>
+
+      <line x1="214" y1="47" x2="238" y2="47" class="arrow" marker-end="url(#arrow3)"></line>
+      <rect x="240" y="20" width="90" height="54" rx="8" class="box"></rect>
+      <text x="285" y="37" text-anchor="middle" font-weight="700" font-size="12">ChatGPT</text>
+      <text x="285" y="50" text-anchor="middle" class="lbl">2022</text>
+      <text x="285" y="62" text-anchor="middle" class="lbl">instruction tuning</text>
+      <text x="285" y="72" text-anchor="middle" class="lbl">+ RLHF</text>
+
+      <line x1="330" y1="47" x2="354" y2="47" class="arrow" marker-end="url(#arrow3)"></line>
+      <rect x="356" y="20" width="90" height="54" rx="8" class="box"></rect>
+      <text x="401" y="40" text-anchor="middle" font-weight="700" font-size="12">GPT-4</text>
+      <text x="401" y="53" text-anchor="middle" class="lbl">2023</text>
+      <text x="401" y="65" text-anchor="middle" class="lbl">multimodal, MoE?</text>
+
+      <line x1="446" y1="47" x2="470" y2="47" class="arrow" marker-end="url(#arrow3)"></line>
+      <rect x="472" y="20" width="80" height="54" rx="8" class="box"></rect>
+      <text x="512" y="40" text-anchor="middle" font-weight="700" font-size="12">o1</text>
+      <text x="512" y="53" text-anchor="middle" class="lbl">2024</text>
+      <text x="512" y="65" text-anchor="middle" class="lbl">reasoning tokens</text>
+
+      <line x1="552" y1="47" x2="576" y2="47" class="arrow" marker-end="url(#arrow3)"></line>
+      <rect x="578" y="20" width="56" height="54" rx="8" class="box" stroke-dasharray="3,3"></rect>
+      <text x="606" y="40" text-anchor="middle" font-weight="700" font-size="11">GPT-5</text>
+      <text x="606" y="53" text-anchor="middle" class="lbl">?</text>
+      <text x="606" y="65" text-anchor="middle" class="lbl">rumored</text>
+
+      <line x1="53" y1="76" x2="53" y2="100" class="arrow"></line>
+      <text x="53" y="118" text-anchor="middle" font-size="11" font-weight="700" fill="var(--accent)">&uarr;</text>
+      <text x="53" y="134" text-anchor="middle" class="lbl">this repo</text>
+      <text x="53" y="146" text-anchor="middle" class="lbl">runs this one</text>
+    </svg>
+    <figcaption>Same decoder-only recipe the whole way across &mdash; what changed at each step is additions on top, not replacements.</figcaption>
+  </div>
+
+  <h2>GPT-3 (2020): the exact same architecture, just much bigger</h2>
+  <p>
+    This is the easiest step to understand, because you already have the
+    vocabulary for it: GPT-3 made <strong>no</strong> architectural change over
+    GPT-2. It's the identical recipe from Chapters 1&ndash;6 &mdash; same attention, same
+    residual stream, same next-token loop &mdash; just with both of Chapter 4's knobs
+    turned way up. The largest GPT-3 model ("Davinci") used 96 layers and a
+    hidden size of 12,288, for 175 billion parameters, compared to GPT-2 Small's
+    12 layers, 768 hidden size, and 124 million parameters. Context window also
+    grew, from 1,024 tokens to 2,048.
+  </p>
+  <div class="example">
+    <span class="tag">A genuine surprise from pure scale</span>
+    <p style="margin:0;">
+      Simply making the same architecture bigger produced a real, unplanned side
+      effect: <strong>few-shot learning</strong>. Show a large enough model a
+      couple of examples of a new task directly in its prompt &mdash; no retraining,
+      no fine-tuning, just examples in the text it's completing &mdash; and it gets
+      noticeably better at that task. GPT-2 could barely do this; GPT-3 could do
+      it well. Nobody explicitly designed this ability in; it "emerged" once the
+      model got big enough, which is why it's called an <strong>emergent
+      ability</strong>.
+    </p>
+  </div>
+
+  <h2>ChatGPT / GPT-3.5 (2022): teaching it to actually converse</h2>
+  <p>
+    You already know the first half of this story from Chapter 5: wrap the input
+    in a chat template, then fine-tune the model on many examples in that shape
+    so it learns to treat "complete this text" as "answer this question." That
+    fine-tuning step has a name, <strong>Supervised Fine-Tuning (SFT)</strong>, and
+    ChatGPT adds a second phase on top of it that this tutorial hasn't covered
+    yet: <strong>RLHF</strong> (Reinforcement Learning from Human Feedback).
+  </p>
+  <p>
+    Here's the idea: after SFT, humans are shown several different answers the
+    model generated for the same prompt and asked to rank them, best to worst.
+    Those rankings train a separate, smaller model &mdash; a <strong>reward
+    model</strong> &mdash; whose only job is to look at an answer and predict how much
+    a human would like it. Then the original model is adjusted, using that
+    reward model as a scoring signal, to produce more answers that score highly
+    and fewer that score poorly.
+  </p>
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      SFT is like a student studying worked examples to learn the general shape
+      of a good answer. RLHF is more like a student submitting several draft
+      essays, having a teacher rank them best-to-worst without saying exactly
+      why, and then revising future essays to chase whatever pattern seems to
+      earn better rankings. It's a subtler, harder-to-specify kind of feedback
+      than "here's the correct answer" &mdash; but it's remarkably effective at
+      making a model's tone, helpfulness, and safety feel right.
+    </p>
+  </div>
+
+  <h2>GPT-4 (2023): bigger, multimodal, and probably many specialists</h2>
+  <p>
+    GPT-4's exact architecture was never published, but two things are known or
+    strongly suspected, and you've already learned the mechanics of both from
+    this project's own models:
+  </p>
+  <ul>
+    <li><strong>Multimodal input</strong> &mdash; GPT-4 accepts images as well as text.
+    This tutorial doesn't cover how (this project's models are text-only), but
+    conceptually an image gets converted into its own set of "tokens" that join
+    the text tokens in the same residual stream from Chapter 4.</li>
+    <li><strong>Rumored Mixture-of-Experts</strong> &mdash; widely believed (never
+    confirmed by OpenAI) to use the same panel-of-specialists idea Chapter 10
+    covers for Granite 3.0, just at a much larger, closed scale.</li>
+  </ul>
+  <p>
+    Context also grew again, to 8K tokens standard and 32K in an extended
+    variant &mdash; the same context-window tradeoffs from Chapter 7, just with more
+    memory budget thrown at the problem.
+  </p>
+
+  <h2>o1 and reasoning models (2024): the same loop, just longer</h2>
+  <p>
+    This is the one that sounds like a bigger leap than it actually is. Recall
+    Chapter 5: decode is just repeated next-token guessing, over and over, until
+    a stop token appears. A reasoning model like o1 doesn't change that loop at
+    all &mdash; it just runs it for many more steps than usual on tokens you typically
+    never see, working through intermediate "thinking out loud" reasoning
+    <em>before</em> committing to the tokens shown as the final answer. It was
+    specifically trained (extending the RLHF idea above) to be rewarded for
+    working through good step-by-step reasoning paths, not just for the final
+    answer's wording.
+  </p>
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      Like the difference between blurting out the first answer that comes to
+      mind versus working scratch-paper arithmetic before writing down a final
+      number. Both are done by the same brain, using the same skills &mdash; one just
+      spends more visible effort before answering. o1's "scratch paper" is a long
+      run of ordinary decode steps you don't see, using nothing more exotic than
+      Chapter 5's loop, run for longer.
+    </p>
+  </div>
+
+  <h2>GPT-5 and beyond: where the trends point</h2>
+  <p>
+    As of this writing, GPT-5 details are speculative. But the direction of
+    travel across the whole industry (not just OpenAI) points squarely at
+    techniques this tutorial already covers: longer context windows (Chapters 7
+    and 8's Mamba2 approach are exactly how some models get there affordably),
+    more efficient attention (Chapter 10's GQA/MQA and FlashAttention), and
+    sparser, MoE-style scaling (also Chapter 10).
+  </p>
+
+  <h2>What actually changed, at a glance</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Model</th><th>Year</th><th>What was actually new</th><th>Where this tutorial covers the mechanism</th></tr>
+      <tr><td>GPT-2</td><td>2019</td><td>The base decoder-only architecture</td><td>Chapters 1&ndash;6 (this is our whole worked example)</td></tr>
+      <tr><td>GPT-3</td><td>2020</td><td>Pure scale &mdash; more width and depth</td><td>Chapter 4</td></tr>
+      <tr><td>ChatGPT</td><td>2022</td><td>Instruction tuning + RLHF</td><td>Chapter 5 (SFT/chat templates); RLHF is new here</td></tr>
+      <tr><td>GPT-4</td><td>2023</td><td>Multimodal input, probably MoE</td><td>Chapter 10 (MoE mechanics, via Granite)</td></tr>
+      <tr><td>o1</td><td>2024</td><td>Extended reasoning before answering</td><td>Chapter 5 (same decode loop, run longer)</td></tr>
+      <tr><td>GPT-5+</td><td>&mdash;</td><td>Longer context, more efficiency (trend)</td><td>Chapters 7, 8, 10</td></tr>
+    </table>
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="08-mamba2.html"><span class="dir">&larr; Back</span>Mamba2</a>
+    <a class="next" href="10-advanced-techniques.html"><span class="dir">Next</span>More modern tricks &rarr;</a>
+  </nav>
+</main>
+</body>
+</html>

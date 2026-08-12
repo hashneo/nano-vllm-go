@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>8. Mamba2 &mdash; How LLMs Work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">How LLMs <span>Work</span></a>
+    <span class="crumb">Chapter 8 of 10</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <nav class="stepper" aria-label="Chapters">
+    <a href="01-tokenization.html">1</a>
+    <a href="02-embeddings.html">2</a>
+    <a href="03-attention.html">3</a>
+    <a href="04-hidden-layers.html">4</a>
+    <a href="05-generation-loop.html">5</a>
+    <a href="06-kv-cache.html">6</a>
+    <a href="07-inference-engine.html">7</a>
+    <a class="current" href="08-mamba2.html">8</a>
+    <a href="09-model-evolution.html">9</a>
+    <a href="10-advanced-techniques.html">10</a>
+  </nav>
+
+  <p class="kicker">Chapter 8</p>
+  <h1>Mamba2: a running summary instead of a notebook</h1>
+  <p class="subtitle">
+    Chapter 6 left off on an uncomfortable fact: the KV cache's 144 index-card
+    trays (for GPT-2 Small &mdash; more for bigger models) never shrink. Every token,
+    forever, adds another card to every tray. Some of the newest models in this
+    project's lineup &mdash; IBM's Granite 4.0 &mdash; solve this by ditching that
+    approach entirely for most of their layers, using a different mechanism
+    called <strong>Mamba2</strong>.
+  </p>
+
+  <h2>A notebook that gets overwritten, not appended to</h2>
+  <p>
+    A Mamba2 layer keeps something much smaller than a KV cache: one fixed-size
+    <strong>running state</strong> per attention-style head. When a new token
+    arrives, the layer doesn't file away a new card &mdash; it <strong>updates the
+    existing state in place</strong>, blending the new token's information into
+    the same fixed amount of storage that was already there. Whether the
+    conversation is 10 tokens or 10,000 tokens long, a Mamba2 layer's memory
+    footprint never changes size.
+  </p>
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      A KV cache is a court stenographer, transcribing every single word verbatim
+      &mdash; the transcript only ever gets longer. A Mamba2 layer is more like
+      someone keeping a single running summary paragraph of a long meeting: after
+      every new statement, they go back and lightly rewrite the same paragraph to
+      fold the new point in, without the paragraph itself growing forever.
+    </p>
+  </div>
+
+  <h2>"Selective": learning how hard to overwrite</h2>
+  <p>
+    A plain running average would treat every token equally, which would let
+    important early details get diluted away too quickly. Mamba2 avoids this
+    with a learned, per-token dial called <strong>delta</strong> (written &Delta;)
+    &mdash; essentially "how much should this specific new token overwrite what I
+    already know, versus leave it alone?" A token carrying an important new fact
+    can push &Delta; high and overwrite heavily; a filler word can push &Delta; low
+    and leave the running state almost untouched. That per-token, learned
+    adjustment is what the "selective" in "selective state-space model" refers
+    to &mdash; it's not a fixed formula, it's something the model learned during
+    training.
+  </p>
+  <p>
+    Before that update happens, each Mamba2 layer also takes a quick local glance
+    backward &mdash; a few tokens' worth &mdash; through a small step called a
+    <strong>causal convolution</strong>. Think of it as skimming the last handful
+    of words before deciding how to revise the running summary, catching short,
+    local patterns cheaply before the bigger state update happens.
+  </p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A KV cache grows with every token while a Mamba2 state stays a fixed size and gets updated in place">
+      <style>
+        text{font-family:-apple-system,Helvetica,Arial,sans-serif;fill:var(--ink);}
+        .lbl{font-size:10.5px;fill:var(--ink-soft);}
+        .old{fill:var(--chip);stroke:var(--border);stroke-width:1.2;}
+        .new{fill:var(--accent);stroke:var(--accent);}
+        .state{fill:var(--accent2-soft);stroke:var(--accent2);stroke-width:1.5;}
+      </style>
+
+      <text x="10" y="18" font-weight="700" font-size="12">Attention + KV cache: grows every step</text>
+      <g>
+        <rect x="10" y="30" width="26" height="22" rx="4" class="old"></rect>
+        <text x="60" y="46" class="lbl">step 1: 1 entry</text>
+      </g>
+      <g>
+        <rect x="10" y="62" width="26" height="22" rx="4" class="old"></rect>
+        <rect x="40" y="62" width="26" height="22" rx="4" class="new"></rect>
+        <text x="90" y="78" class="lbl">step 2: 2 entries</text>
+      </g>
+      <g>
+        <rect x="10" y="94" width="26" height="22" rx="4" class="old"></rect>
+        <rect x="40" y="94" width="26" height="22" rx="4" class="old"></rect>
+        <rect x="70" y="94" width="26" height="22" rx="4" class="new"></rect>
+        <text x="120" y="110" class="lbl">step 3: 3 entries &mdash; keeps growing&#8230;</text>
+      </g>
+
+      <line x1="10" y1="140" x2="620" y2="140" stroke="var(--border)" stroke-width="1"></line>
+
+      <text x="10" y="162" font-weight="700" font-size="12">Mamba2: same size, updated in place</text>
+      <rect x="10" y="174" width="46" height="30" rx="6" class="state"></rect>
+      <text x="70" y="193" class="lbl">step 1: state written</text>
+      <rect x="220" y="174" width="46" height="30" rx="6" class="state"></rect>
+      <text x="280" y="193" class="lbl">step 2: same box, overwritten</text>
+      <rect x="460" y="174" width="46" height="30" rx="6" class="state"></rect>
+      <text x="520" y="193" class="lbl">step 3: still the same size</text>
+    </svg>
+    <figcaption>The KV cache's memory grows without bound as a conversation continues; a Mamba2 layer's state never does.</figcaption>
+  </div>
+
+  <h2>Why this matters: cost that doesn't grow</h2>
+  <p>
+    Chapter 6 computed a real number: roughly 72&nbsp;KB of KV cache per token for
+    a small model &mdash; multiplied by every token, in every active conversation.
+    A Mamba2 layer's cost per token, by contrast, doesn't multiply by conversation
+    length at all &mdash; it's the same fixed amount of work and memory whether you're
+    on token 10 or token 100,000. That's the real, practical payoff, and it's a
+    big part of why Granite 4.0's larger model can advertise a <strong>128,000
+    token</strong> context window without the same runaway memory cost a pure
+    attention model of similar size would carry.
+  </p>
+
+  <div class="example">
+    <span class="tag">Real numbers from this project</span>
+    <p style="margin:0;">
+      Granite 4.0's smaller model keeps each Mamba2 layer's running state at a
+      fixed <strong>128</strong> numbers per head, across <strong>48</strong> heads &mdash;
+      set once in the model's configuration, and never resized no matter how long
+      the conversation runs. Compare that to Chapter 6's KV cache, whose size is
+      multiplied by however many tokens have been seen <em>so far</em>.
+    </p>
+  </div>
+
+  <h2>The catch &mdash; and why Granite still keeps some attention</h2>
+  <p>
+    Compressing everything into one fixed-size running summary has an obvious
+    cost: unlike a full transcript, it <em>can</em> lose precise details from far
+    back in a long conversation, especially exact wording rather than general
+    gist. This is exactly why Granite 4.0 is a <strong>hybrid</strong>: its
+    smaller model mixes in just 4 ordinary attention-plus-KV-cache layers among
+    28 Mamba2 layers (at specific positions in the stack), giving the model a few
+    chances to consult something closer to a full, precise transcript, while
+    still doing the vast majority of its work in the cheap, constant-cost Mamba2
+    layers.
+  </p>
+
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      Like a team that mostly works from a running summary of a long project, but
+      pulls up the full unabridged meeting transcript for a few specifically
+      important checkpoints. Most of the time the summary is good enough and far
+      cheaper to maintain; occasionally, precision matters enough to pay for the
+      full record.
+    </p>
+  </div>
+
+  <div class="codepath">
+    <span class="tag">Under the hood</span>
+    The Mamba2 layer &mdash; its causal convolution, the &Delta; ("delta") projection,
+    and the state update &mdash; is <code>Mamba2Layer</code> in
+    <code>purego/tensor/mamba2.go</code>. Which layers are attention vs. Mamba2
+    is set per-model in <code>ModelConfig.HybridLayers</code>
+    (<code>purego/tensor/config.go</code>, see <code>NewGraniteConfig()</code> for
+    the real 4-attention/28-Mamba2 split), and the per-layer dispatch between the
+    two happens in <code>GenericBlock.Forward()</code> in
+    <code>purego/tensor/generic_model.go</code>.
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="07-inference-engine.html"><span class="dir">&larr; Back</span>The engine room</a>
+    <a class="next" href="09-model-evolution.html"><span class="dir">Next</span>From GPT-2 to today &rarr;</a>
+  </nav>
+</main>
+</body>
+</html>

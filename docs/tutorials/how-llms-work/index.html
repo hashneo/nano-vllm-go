@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How LLMs Work: From Question to Answer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">How LLMs <span>Work</span></a>
+    <span class="crumb">Start here</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <p class="kicker">A plain-language walkthrough</p>
+  <h1>How an LLM turns your question into an answer</h1>
+  <p class="subtitle">
+    No prior knowledge of AI needed. By the end, you'll understand &mdash; in real terms,
+    not buzzwords &mdash; what happens between you pressing "enter" and the words
+    appearing on your screen.
+  </p>
+
+  <div class="analogy">
+    <span class="tag">The question we'll follow all the way through</span>
+    <p style="margin:0; font-size:1.15rem;">
+      <strong>"The capital city of France is&nbsp;&hellip;"</strong>
+    </p>
+    <p style="margin-top:0.6rem;">
+      Chapters 1&ndash;5 follow this exact sentence through a real, working model
+      &mdash; a small, older model called <strong>GPT-2</strong> that actually runs inside
+      the project this tutorial documents. We're not making up examples; the
+      numbers you'll see are real output from that model's own tokenizer. GPT-2
+      is deliberately old and simple: it has no chat interface at all, which makes
+      the raw mechanics easy to see with nothing hidden. Chapter 5 then shows,
+      with real code from this project, exactly what modern chat models like
+      Llama, Falcon, and Granite add on top of those same mechanics to turn "finish
+      this sentence" into an actual conversation &mdash; and Chapters 6&ndash;8 go deep on
+      how those and other modern models actually run efficiently, including a
+      genuinely different mechanism called Mamba2. Chapters 9 and 10 zoom back
+      out: how OpenAI's own models evolved from GPT-2 to today, and the rest of
+      the modern toolkit &mdash; FlashAttention, quantization, and more &mdash; that
+      didn't fit neatly into the story above.
+    </p>
+  </div>
+
+  <p>
+    Before diving in, it helps to meet the three "characters" involved. Every
+    time you ask an AI model a question, three different pieces of software
+    hand the work off to each other:
+  </p>
+
+  <div class="box">
+    <p><strong>1. The tokenizer</strong> &mdash; a translator that turns your English sentence into
+    numbers, because computers can't read words, only numbers.</p>
+    <p><strong>2. The model</strong> &mdash; the "brain." A giant pile of learned number patterns
+    (called <em>parameters</em>) that has seen enough text to predict, very well,
+    what word is likely to come next after any given piece of text.</p>
+    <p style="margin-bottom:0;"><strong>3. The inference engine</strong> &mdash; the "kitchen manager." The software
+    that actually runs the brain efficiently: remembering what's already been
+    read, juggling multiple people's questions at once, and deciding when to
+    stop generating.</p>
+  </div>
+
+  <p>
+    A common misconception is that the "model" does everything. In reality the
+    model is just the recipe/knowledge &mdash; it's inert without an engine to run it,
+    and the engine's design has a huge effect on how fast, how long, and how many
+    questions can be answered at once. This tutorial covers both, because this
+    project (<code>nano-vllm-go</code>) implements both from scratch, in the open,
+    with no black boxes.
+  </p>
+
+  <h2>The roadmap</h2>
+  <p>Ten chapters, in order. Each builds on the last, and each ends with a short
+  note on exactly where that concept lives in this project's real Go code (or,
+  for Chapter 9's history lesson, a note that it's the one exception).</p>
+
+  <div class="chapters">
+    <a class="chapter-card" href="01-tokenization.html">
+      <span class="num">1</span>
+      <span>
+        <h3>Turning words into numbers</h3>
+        <p>How "The capital city of France is" becomes a list of plain integers a computer can work with.</p>
+      </span>
+    </a>
+    <a class="chapter-card" href="02-embeddings.html">
+      <span class="num">2</span>
+      <span>
+        <h3>Giving numbers meaning</h3>
+        <p>How each number becomes a "fingerprint" that captures what it means and where it sits in the sentence.</p>
+      </span>
+    </a>
+    <a class="chapter-card" href="03-attention.html">
+      <span class="num">3</span>
+      <span>
+        <h3>How the model "thinks"</h3>
+        <p>Attention: Query, Key, and Value &mdash; how every word looks around at the others to build up understanding.</p>
+      </span>
+    </a>
+    <a class="chapter-card" href="04-hidden-layers.html">
+      <span class="num">4</span>
+      <span>
+        <h3>How understanding accumulates</h3>
+        <p>The residual stream: why a fingerprint is annotated, not replaced, as it passes through 12 stacked layers.</p>
+      </span>
+    </a>
+    <a class="chapter-card" href="05-generation-loop.html">
+      <span class="num">5</span>
+      <span>
+        <h3>Writing the answer, one piece at a time</h3>
+        <p>The word-by-word answer loop &mdash; plus the real chat templates modern models like Llama and Falcon use to turn a plain question into a conversation.</p>
+      </span>
+    </a>
+    <a class="chapter-card" href="06-kv-cache.html">
+      <span class="num">6</span>
+      <span>
+        <h3>The KV cache</h3>
+        <p>What actually gets remembered between one word and the next, and why it's called "KV," precisely.</p>
+      </span>
+    </a>
+    <a class="chapter-card" href="07-inference-engine.html">
+      <span class="num">7</span>
+      <span>
+        <h3>The engine room</h3>
+        <p>Why a fast "brain" still needs a well-run kitchen: context windows, scheduling, and serving many people at once.</p>
+      </span>
+    </a>
+    <a class="chapter-card" href="08-mamba2.html">
+      <span class="num">8</span>
+      <span>
+        <h3>Mamba2: a running summary</h3>
+        <p>A genuinely different mechanism some modern models use instead of a KV cache &mdash; and why it's suddenly relevant.</p>
+      </span>
+    </a>
+    <a class="chapter-card bonus" href="09-model-evolution.html">
+      <span class="num">9</span>
+      <span>
+        <h3>From GPT-2 to today</h3>
+        <p>The history lesson: what actually changed from GPT-2 through GPT-3, ChatGPT, GPT-4, and reasoning models like o1.</p>
+      </span>
+    </a>
+    <a class="chapter-card bonus" href="10-advanced-techniques.html">
+      <span class="num">10</span>
+      <span>
+        <h3>Different brains, different tricks</h3>
+        <p>The remaining variations &mdash; GQA/MQA, FlashAttention, RoPE, MoE, quantization &mdash; and which real models use them.</p>
+      </span>
+    </a>
+  </div>
+
+  <p style="text-align:center;">
+    <a href="01-tokenization.html" style="font-weight:700; color:var(--accent); text-decoration:none;">Start with Chapter 1 &rarr;</a>
+  </p>
+
+  <footer class="pagefoot">Part of the nano-vllm-go project documentation.</footer>
+</main>
+</body>
+</html>

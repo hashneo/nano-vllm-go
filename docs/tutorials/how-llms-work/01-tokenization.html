@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1. Turning Words Into Numbers &mdash; How LLMs Work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">How LLMs <span>Work</span></a>
+    <span class="crumb">Chapter 1 of 10</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <nav class="stepper" aria-label="Chapters">
+    <a class="current" href="01-tokenization.html">1</a>
+    <a href="02-embeddings.html">2</a>
+    <a href="03-attention.html">3</a>
+    <a href="04-hidden-layers.html">4</a>
+    <a href="05-generation-loop.html">5</a>
+    <a href="06-kv-cache.html">6</a>
+    <a href="07-inference-engine.html">7</a>
+    <a href="08-mamba2.html">8</a>
+    <a href="09-model-evolution.html">9</a>
+    <a href="10-advanced-techniques.html">10</a>
+  </nav>
+
+  <p class="kicker">Chapter 1</p>
+  <h1>Turning words into numbers</h1>
+  <p class="subtitle">
+    A computer chip has never read a single word in its life. It only ever
+    does arithmetic on numbers. So step one, always, is translating your
+    sentence into numbers &mdash; and the way that's done is surprisingly simple.
+  </p>
+
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      Imagine a box of exactly <strong>50,257</strong> pre-printed puzzle pieces.
+      Each piece has a little chunk of text printed on it &mdash; some pieces are whole
+      common words like <code>"The"</code>, some are just a few letters like
+      <code>"ing"</code>, some are a word with a space glued to the front like
+      <code>" capital"</code>. Every piece also has a serial number stamped on the back.
+      To "read" a sentence, you find the right sequence of pieces that spells it out,
+      and write down their serial numbers. That list of numbers is all the computer
+      ever actually sees.
+    </p>
+  </div>
+
+  <p>
+    This chopping-into-pieces process is called <strong>tokenization</strong>, and each
+    piece is called a <strong>token</strong>. The specific method used here &mdash;
+    inventing a fixed box of ~50,000 frequently-reused chunks by looking at huge
+    amounts of text and merging the most common pairs of letters together &mdash; is
+    called <strong>Byte-Pair Encoding (BPE)</strong>. It's a compromise: a token
+    for every possible whole word would need an impossibly huge box, but a token
+    for every single letter would mean an enormous, slow-to-process list of numbers
+    for even one sentence. BPE lands in the middle &mdash; common words get their own
+    single piece, rare words get split into a few pieces.
+  </p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A sentence going into a tokenizer and coming out as a list of numbers">
+      <defs>
+        <marker id="arrow1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path class="arrowhead" d="M0,0 L10,5 L0,10 z"></path>
+        </marker>
+      </defs>
+      <style>
+        text{font-family:-apple-system,Helvetica,Arial,sans-serif;fill:var(--ink);}
+        .lbl{font-size:11px;fill:var(--ink-soft);}
+        .soft{fill:var(--ink-soft);}
+        .box{fill:var(--panel);stroke:var(--border);stroke-width:1.5;}
+        .accentbox{fill:var(--accent-soft);stroke:var(--border);stroke-width:1.5;}
+        .idbox{fill:var(--panel);stroke:var(--border);stroke-width:1.5;}
+        .idtext{fill:var(--accent);font-family:"SF Mono",Menlo,monospace;font-weight:700;}
+        .arrow{stroke:var(--ink-soft);stroke-width:2;fill:none;}
+        .arrowhead{fill:var(--ink-soft);}
+      </style>
+
+      <rect x="10" y="70" width="200" height="60" class="box" rx="10"></rect>
+      <text x="110" y="95" font-size="13" text-anchor="middle">"The capital city</text>
+      <text x="110" y="112" font-size="13" text-anchor="middle">of France is&#8230;"</text>
+      <text x="110" y="55" class="lbl" text-anchor="middle">YOUR SENTENCE</text>
+
+      <line x1="220" y1="100" x2="275" y2="100" class="arrow" marker-end="url(#arrow1)"></line>
+
+      <rect x="285" y="55" width="130" height="90" class="accentbox" rx="10"></rect>
+      <text x="350" y="95" font-size="13" text-anchor="middle" font-weight="700">Tokenizer</text>
+      <text x="350" y="112" font-size="10.5" text-anchor="middle" class="soft">box of 50,257</text>
+      <text x="350" y="126" font-size="10.5" text-anchor="middle" class="soft">known pieces</text>
+
+      <line x1="425" y1="100" x2="470" y2="100" class="arrow" marker-end="url(#arrow1)"></line>
+
+      <g font-size="12">
+        <rect x="480" y="45" width="60" height="26" rx="6" class="idbox"></rect>
+        <text x="510" y="63" text-anchor="middle" class="idtext">464</text>
+        <rect x="480" y="76" width="60" height="26" rx="6" class="idbox"></rect>
+        <text x="510" y="94" text-anchor="middle" class="idtext">3139</text>
+        <rect x="480" y="107" width="60" height="26" rx="6" class="idbox"></rect>
+        <text x="510" y="125" text-anchor="middle" class="idtext">1748</text>
+        <rect x="480" y="138" width="60" height="26" rx="6" class="idbox"></rect>
+        <text x="510" y="156" text-anchor="middle" class="idtext">&#8230;</text>
+      </g>
+      <text x="560" y="55" class="lbl">TOKEN</text>
+      <text x="560" y="67" class="lbl">IDs</text>
+    </svg>
+    <figcaption>A sentence is matched against a fixed vocabulary and rewritten as a short list of ID numbers.</figcaption>
+  </div>
+
+  <h2>Doing it for real</h2>
+  <p>
+    Here is the <em>actual, real</em> output of this project's own tokenizer &mdash; not a
+    made-up example &mdash; when it's given our running sentence. Notice it doesn't split
+    one-per-word exactly; the space before a word is often folded into the next
+    piece, which is a quirk of how this particular vocabulary was built:
+  </p>
+
+  <div class="tokrow">
+    <div class="tok"><span class="id">464</span><span class="piece">"The"</span></div>
+    <div class="tok"><span class="id">3139</span><span class="piece">" capital"</span></div>
+    <div class="tok"><span class="id">1748</span><span class="piece">" city"</span></div>
+    <div class="tok"><span class="id">286</span><span class="piece">" of"</span></div>
+    <div class="tok"><span class="id">4881</span><span class="piece">" France"</span></div>
+    <div class="tok"><span class="id">318</span><span class="piece">" is"</span></div>
+  </div>
+
+  <p>
+    Six words became six tokens this time &mdash; but that's a coincidence of this
+    particular sentence, not a rule. A rarer word like <em>"tokenization"</em> itself
+    would likely get chopped into two or three pieces, e.g. something like
+    <code>" token"</code> + <code>"ization"</code>, because that exact whole word
+    never earned its own piece in the box.
+  </p>
+
+  <div class="example">
+    <span class="tag">Why this matters later</span>
+    <p style="margin:0;">
+      Everything downstream &mdash; the model's "understanding," the memory it manages,
+      the length limit on a conversation &mdash; is measured in <strong>tokens</strong>,
+      not words or characters. When you hear a model has a "128,000 token context
+      window," this chapter is why: that's the total number of these little numbered
+      puzzle pieces it can hold onto at once, for both your question and its answer
+      combined.
+    </p>
+  </div>
+
+  <div class="codepath">
+    <span class="tag">Under the hood</span>
+    This project's tokenizer lives in <code>purego/bpe_tokenizer.go</code> and
+    <code>purego/gpt2_tokenizer.go</code>, and loads the real GPT-2 vocabulary
+    from <code>vocab.json</code> / <code>merges.txt</code>. The numbers above came
+    straight from running that code.
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="index.html"><span class="dir">&larr; Back</span>Start</a>
+    <a class="next" href="02-embeddings.html"><span class="dir">Next</span>Giving numbers meaning &rarr;</a>
+  </nav>
+</main>
+</body>
+</html>

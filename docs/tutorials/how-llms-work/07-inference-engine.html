@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7. The Engine Room &mdash; How LLMs Work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">How LLMs <span>Work</span></a>
+    <span class="crumb">Chapter 7 of 10</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <nav class="stepper" aria-label="Chapters">
+    <a href="01-tokenization.html">1</a>
+    <a href="02-embeddings.html">2</a>
+    <a href="03-attention.html">3</a>
+    <a href="04-hidden-layers.html">4</a>
+    <a href="05-generation-loop.html">5</a>
+    <a href="06-kv-cache.html">6</a>
+    <a class="current" href="07-inference-engine.html">7</a>
+    <a href="08-mamba2.html">8</a>
+    <a href="09-model-evolution.html">9</a>
+    <a href="10-advanced-techniques.html">10</a>
+  </nav>
+
+  <p class="kicker">Chapter 7</p>
+  <h1>The engine room: serving many people at once</h1>
+  <p class="subtitle">
+    Chapter 6 was about one conversation avoiding wasted work. This chapter is
+    about what happens when hundreds of conversations want the model's attention
+    at the same time &mdash; a whole separate set of problems that have nothing to do
+    with how smart the model is.
+  </p>
+
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      Think of the model as a brilliant chef, and the inference engine as the
+      kitchen manager. The chef's skill matters, obviously &mdash; but so does whether
+      the kitchen can handle six tables' orders at once without everyone waiting
+      for everyone else, and whether the pantry has room for every table's
+      ingredients simultaneously. Those are the kitchen manager's problems, not
+      the chef's. This chapter is about the kitchen.
+    </p>
+  </div>
+
+  <h2>Problem 1: the notebook isn't infinite &mdash; the "context window"</h2>
+  <p>
+    Chapter 6's KV cache notebook has to live somewhere in the computer's memory,
+    and memory is finite. This is exactly what a model's advertised
+    <strong>context window</strong>
+    (like "128,000 tokens") really refers to: it's the maximum size that notebook
+    is allowed to grow to. Once your conversation's tokens &mdash; question and answer
+    combined &mdash; hit that ceiling, something has to give: older parts get dropped,
+    or the engine refuses to go further.
+  </p>
+  <p>
+    Here's a fact worth sitting with: the context window is decided by
+    <strong>both</strong> the model and the engine, not just one or the other. The
+    model sets an upper bound &mdash; GPT-2 was built with a seating chart (Chapter 2)
+    that simply has no chair past position 1,024, so it <em>cannot</em> go further
+    no matter what. But even for models with a much bigger upper bound, the engine
+    running them has to actually set aside enough memory for that notebook &mdash; and
+    on limited hardware, the engine might cap it far below what the model is
+    theoretically capable of, simply because there isn't room.
+  </p>
+
+  <h2>Problem 2: serving more than one person at once</h2>
+  <p>
+    Real deployments rarely serve one question at a time &mdash; dozens of people are
+    asking things simultaneously. Running them one-at-a-time, start to finish,
+    would mean everyone in line waits for everyone ahead of them, even though most
+    of the actual work (loading the model, setting up computation) could be shared.
+  </p>
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      A good kitchen doesn't cook one full order start-to-finish before glancing
+      at the next ticket &mdash; it interleaves them, starting a new table's order the
+      moment there's a free burner. The engine's <strong>scheduler</strong> does the
+      same thing: it continuously mixes together bits of work from many people's
+      conversations, called <strong>continuous batching</strong>, so hardware never
+      sits idle waiting for one particular person's next word.
+    </p>
+  </div>
+  <p>
+    And rather than reserving one giant fixed notebook per person (wasteful &mdash; most
+    conversations are short), the notebook is carved into small reusable pages,
+    called <strong>blocks</strong>, that get handed out and returned as needed. If
+    two different people start their conversation with the exact same opening
+    text, the engine can even notice and let them share the same already-filled-in
+    pages &mdash; called <strong>prefix caching</strong> &mdash; instead of filling in two
+    identical notebooks separately.
+  </p>
+
+  <div class="example">
+    <span class="tag">The real name for this trick</span>
+    <p style="margin:0;">
+      This block-and-page approach to KV cache memory has a specific name in the
+      research world: <strong>PagedAttention</strong>, introduced by the <strong>vLLM</strong>
+      project (a real, widely-used, high-performance inference engine &mdash; the
+      project you're reading right now, <code>nano-vllm-go</code>, is a small,
+      from-scratch, educational homage to it, hence the name). The core idea, borrowed
+      directly from how operating systems page virtual memory, is exactly what
+      you just read: stop treating each conversation's cache as one contiguous
+      block, split it into fixed-size pages instead, and let a lookup table
+      (a <strong>block table</strong>) map each conversation to whichever pages it's
+      currently using &mdash; wherever they happen to sit in memory.
+    </p>
+  </div>
+
+  <div class="example">
+    <span class="tag">Recap</span>
+    <p style="margin:0;">
+      The <strong>model</strong> decides what a good answer looks like. The
+      <strong>engine</strong> decides how much memory that costs, how many people can
+      be served at once, and how long a conversation is actually allowed to be
+      on this hardware right now. Both matter &mdash; a brilliant model with a poorly
+      built engine around it is still going to feel slow and expensive.
+    </p>
+  </div>
+
+  <div class="codepath">
+    <span class="tag">Under the hood</span>
+    The block-based notebook and prefix-caching hashing are implemented in
+    <code>nanovllm/block_manager.go</code>. The scheduler/continuous batching logic
+    is in <code>nanovllm/scheduler.go</code> and <code>nanovllm/llm_engine.go</code>.
+    The context-window setting itself is <code>Config.MaxModelLen</code> in
+    <code>nanovllm/config.go</code>, separate from the model's own trained limit
+    (<code>ModelConfig.MaxSeqLen</code> in <code>purego/tensor/config.go</code>).
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="06-kv-cache.html"><span class="dir">&larr; Back</span>The KV cache</a>
+    <a class="next" href="08-mamba2.html"><span class="dir">Next</span>Mamba2 &rarr;</a>
+  </nav>
+</main>
+</body>
+</html>

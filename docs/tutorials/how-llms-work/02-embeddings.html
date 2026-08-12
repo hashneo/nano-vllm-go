@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2. Giving Numbers Meaning &mdash; How LLMs Work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">How LLMs <span>Work</span></a>
+    <span class="crumb">Chapter 2 of 10</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <nav class="stepper" aria-label="Chapters">
+    <a href="01-tokenization.html">1</a>
+    <a class="current" href="02-embeddings.html">2</a>
+    <a href="03-attention.html">3</a>
+    <a href="04-hidden-layers.html">4</a>
+    <a href="05-generation-loop.html">5</a>
+    <a href="06-kv-cache.html">6</a>
+    <a href="07-inference-engine.html">7</a>
+    <a href="08-mamba2.html">8</a>
+    <a href="09-model-evolution.html">9</a>
+    <a href="10-advanced-techniques.html">10</a>
+  </nav>
+
+  <p class="kicker">Chapter 2</p>
+  <h1>Giving numbers meaning</h1>
+  <p class="subtitle">
+    Token <code>4881</code> is just an arbitrary serial number &mdash; nothing about the
+    digits "4881" tells you it means "France." The model's very first job is to
+    turn that bare ID into something that actually carries meaning.
+  </p>
+
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      Think of it like a fingerprint card. Every token ID gets looked up in a
+      giant reference table and swapped for its own personal "fingerprint" &mdash; a
+      long list of a few thousand numbers. This fingerprint isn't random: it was
+      shaped, during training, so that tokens with related meanings end up with
+      <em>similar-looking</em> fingerprints. The fingerprint for <code>"France"</code>
+      will resemble the fingerprint for <code>"Germany"</code> or <code>"Spain"</code>
+      far more than it resembles the fingerprint for <code>"bicycle"</code> &mdash; because
+      the model noticed, across huge amounts of text, that country names get used
+      in similar ways.
+    </p>
+  </div>
+
+  <p>
+    This fingerprint is called an <strong>embedding</strong>. It's what lets the model
+    work with <em>meaning</em> instead of just arbitrary ID numbers &mdash; two different
+    tokens that mean similar things start out numerically close to each other, which
+    turns out to be exactly the kind of signal the rest of the model can build on.
+  </p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 680 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Two country tokens get similar fingerprints, an unrelated token gets a different one">
+      <style>
+        text{font-family:-apple-system,Helvetica,Arial,sans-serif;fill:var(--ink);}
+        .lbl{font-size:10.5px;fill:var(--ink-soft);}
+        .card{fill:var(--panel);stroke:var(--border);stroke-width:1.5;}
+        .barA{fill:var(--accent2);}
+        .barB{fill:var(--accent);}
+      </style>
+
+      <!-- France card -->
+      <rect x="10" y="15" width="150" height="150" rx="12" class="card"></rect>
+      <text x="85" y="35" text-anchor="middle" font-weight="700" font-size="13">" France"</text>
+      <text x="85" y="50" text-anchor="middle" class="lbl">id 4881</text>
+      <g class="barA">
+        <rect x="25" y="130" width="12" height="20"></rect>
+        <rect x="45" y="100" width="12" height="50"></rect>
+        <rect x="65" y="115" width="12" height="35"></rect>
+        <rect x="85" y="70" width="12" height="80"></rect>
+        <rect x="105" y="120" width="12" height="30"></rect>
+        <rect x="125" y="90" width="12" height="60"></rect>
+      </g>
+
+      <!-- Germany card -->
+      <rect x="190" y="15" width="150" height="150" rx="12" class="card"></rect>
+      <text x="265" y="35" text-anchor="middle" font-weight="700" font-size="13">" Germany"</text>
+      <text x="265" y="50" text-anchor="middle" class="lbl">similar shape</text>
+      <g class="barA">
+        <rect x="205" y="128" width="12" height="22"></rect>
+        <rect x="225" y="95" width="12" height="55"></rect>
+        <rect x="245" y="112" width="12" height="38"></rect>
+        <rect x="265" y="75" width="12" height="75"></rect>
+        <rect x="285" y="118" width="12" height="32"></rect>
+        <rect x="305" y="88" width="12" height="62"></rect>
+      </g>
+
+      <text x="375" y="95" text-anchor="middle" class="lbl">fingerprints</text>
+      <text x="375" y="108" text-anchor="middle" class="lbl">look alike &rarr;</text>
+
+      <!-- bicycle card -->
+      <rect x="440" y="15" width="150" height="150" rx="12" class="card"></rect>
+      <text x="515" y="35" text-anchor="middle" font-weight="700" font-size="13">" bicycle"</text>
+      <text x="515" y="50" text-anchor="middle" class="lbl">unrelated shape</text>
+      <g class="barB">
+        <rect x="455" y="60" width="12" height="90"></rect>
+        <rect x="475" y="135" width="12" height="15"></rect>
+        <rect x="495" y="80" width="12" height="70"></rect>
+        <rect x="515" y="125" width="12" height="25"></rect>
+        <rect x="535" y="65" width="12" height="85"></rect>
+        <rect x="555" y="110" width="12" height="40"></rect>
+      </g>
+    </svg>
+    <figcaption>Each bar-chart is a simplified stand-in for a real embedding, which actually has hundreds of numbers, not six.</figcaption>
+  </div>
+
+  <p>
+    In this project's GPT-2 implementation, each fingerprint has <strong>768</strong>
+    numbers in it (bigger models use more &mdash; thousands, for the largest ones). The
+    diagram above uses six bars purely so it fits on the page; the real thing is the
+    same idea, just wider.
+  </p>
+
+  <h2>Numbers also need to know their <em>place</em></h2>
+  <p>
+    There's a second problem to solve here. <code>"The capital city of France is"</code>
+    and <code>"France is of city the capital"</code> use the exact same tokens &mdash; but
+    obviously mean very different things. Fingerprints alone don't capture word
+    <em>order</em>. So before the model does anything else, it also mixes in a
+    signal for <strong>where</strong> each token sits in the sentence: 1st, 2nd, 3rd,
+    and so on.
+  </p>
+
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      Picture a seating chart at a dinner table. Knowing a guest's name (the
+      fingerprint) isn't enough to understand the conversation &mdash; you also need to
+      know <em>where they're sitting</em> relative to everyone else, because that
+      affects who's talking to whom. Older models like GPT-2 use a fixed seating
+      chart with numbered chairs &mdash; chair 1, chair 2, chair 3&nbsp;&hellip; up to some
+      maximum table size. Newer models use a cleverer trick called <strong>RoPE</strong>
+      (short for Rotary Position Embedding) that works more like a compass bearing
+      between guests than a fixed chair number &mdash; which, as it happens, is also the
+      trick that lets some modern models handle enormous conversations (more on
+      that in the bonus chapter).
+    </p>
+  </div>
+
+  <div class="example">
+    <span class="tag">Where we are so far</span>
+    <p style="margin:0;">
+      Our sentence has gone from plain English, to six token IDs
+      (<code>464, 3139, 1748, 286, 4881, 318</code>), to six fingerprints-with-a-seat-number.
+      The model hasn't "understood" anything yet &mdash; this is still just careful bookkeeping.
+      The actual understanding happens in the next chapter.
+    </p>
+  </div>
+
+  <div class="codepath">
+    <span class="tag">Under the hood</span>
+    The fingerprint lookup table is the token embedding matrix loaded in
+    <code>purego/tensor/loader.go</code> / <code>generic_loader.go</code>. GPT-2's fixed
+    seating chart is its position-embedding table (<code>PositionLearned</code> in
+    <code>purego/tensor/config.go</code>); the RoPE alternative used by Llama/Falcon/Granite
+    lives in <code>purego/tensor/rope.go</code>.
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="01-tokenization.html"><span class="dir">&larr; Back</span>Turning words into numbers</a>
+    <a class="next" href="03-attention.html"><span class="dir">Next</span>How the model "thinks" &rarr;</a>
+  </nav>
+</main>
+</body>
+</html>

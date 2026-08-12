@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5. Writing the Answer &mdash; How LLMs Work</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="index.html">How LLMs <span>Work</span></a>
+    <span class="crumb">Chapter 5 of 10</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <nav class="stepper" aria-label="Chapters">
+    <a href="01-tokenization.html">1</a>
+    <a href="02-embeddings.html">2</a>
+    <a href="03-attention.html">3</a>
+    <a href="04-hidden-layers.html">4</a>
+    <a class="current" href="05-generation-loop.html">5</a>
+    <a href="06-kv-cache.html">6</a>
+    <a href="07-inference-engine.html">7</a>
+    <a href="08-mamba2.html">8</a>
+    <a href="09-model-evolution.html">9</a>
+    <a href="10-advanced-techniques.html">10</a>
+  </nav>
+
+  <p class="kicker">Chapter 4</p>
+  <h1>Writing the answer, one piece at a time</h1>
+  <p class="subtitle">
+    Here's a genuinely surprising fact: the model never writes a whole sentence.
+    It only ever does one thing &mdash; guess the single next token &mdash; and it does that
+    same one thing over and over, feeding each guess back in as new input.
+  </p>
+
+  <h2>Step one: reading the whole question at once ("prefill")</h2>
+  <p>
+    Everything from the last two chapters &mdash; tokens, fingerprints, attention across
+    12 layers &mdash; happens for our whole sentence in one single pass. This first pass,
+    where the model reads and digests everything you gave it, is called
+    <strong>prefill</strong>.
+  </p>
+
+  <p>
+    But the model's actual output at this point isn't a word. It's something more
+    like a scoreboard: a confidence score for <em>every single one of the 50,257
+    possible tokens</em>, ranking how likely each one is to be the very next token.
+    Here's the real output from this project's GPT-2 model for our sentence:
+  </p>
+
+  <div class="diagram">
+    <svg viewBox="0 0 640 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Six input tokens go into the model and out comes a ranked scoreboard of next-token guesses">
+      <style>
+        text{font-family:-apple-system,Helvetica,Arial,sans-serif;fill:var(--ink);}
+        .lbl{font-size:10.5px;fill:var(--ink-soft);}
+        .tokbox{fill:var(--panel);stroke:var(--border);stroke-width:1.5;font-family:"SF Mono",Menlo,monospace;font-size:11px;}
+        .modelbox{fill:var(--accent-soft);stroke:var(--border);stroke-width:1.5;}
+        .rankbox{fill:var(--panel);stroke:var(--border);stroke-width:1.5;}
+        .winner{fill:var(--accent);stroke:var(--accent);}
+        .arrow{stroke:var(--ink-soft);stroke-width:2;fill:none;}
+        .arrowhead{fill:var(--ink-soft);}
+      </style>
+      <defs>
+        <marker id="arrow2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path class="arrowhead" d="M0,0 L10,5 L0,10 z"></path>
+        </marker>
+      </defs>
+
+      <g>
+        <rect x="10" y="20" width="46" height="24" rx="5" class="tokbox"></rect>
+        <text x="33" y="36" text-anchor="middle">464</text>
+        <rect x="10" y="48" width="46" height="24" rx="5" class="tokbox"></rect>
+        <text x="33" y="64" text-anchor="middle">3139</text>
+        <rect x="10" y="76" width="46" height="24" rx="5" class="tokbox"></rect>
+        <text x="33" y="92" text-anchor="middle">1748</text>
+        <rect x="10" y="104" width="46" height="24" rx="5" class="tokbox"></rect>
+        <text x="33" y="120" text-anchor="middle">286</text>
+        <rect x="10" y="132" width="46" height="24" rx="5" class="tokbox"></rect>
+        <text x="33" y="148" text-anchor="middle">4881</text>
+        <rect x="10" y="160" width="46" height="24" rx="5" class="tokbox"></rect>
+        <text x="33" y="176" text-anchor="middle">318</text>
+      </g>
+      <text x="33" y="10" text-anchor="middle" class="lbl">ALL 6 TOKENS, AT ONCE</text>
+
+      <line x1="66" y1="98" x2="115" y2="98" class="arrow" marker-end="url(#arrow2)"></line>
+
+      <rect x="125" y="45" width="120" height="105" rx="12" class="modelbox"></rect>
+      <text x="185" y="90" text-anchor="middle" font-weight="700" font-size="13">GPT-2</text>
+      <text x="185" y="108" text-anchor="middle" font-size="13" font-weight="700">12 layers</text>
+      <text x="185" y="130" text-anchor="middle" class="lbl">(prefill pass)</text>
+
+      <line x1="255" y1="98" x2="304" y2="98" class="arrow" marker-end="url(#arrow2)"></line>
+
+      <text x="400" y="20" text-anchor="middle" class="lbl">SCOREBOARD: 50,257 SCORES, RANKED</text>
+      <rect x="315" y="30" width="170" height="26" rx="6" class="winner"></rect>
+      <text x="325" y="48" fill="#fff" font-size="11.5" font-weight="700">#1&#8194; " Paris"&#8194;&#8194;&#8194;&#8194;&#8194;&#8194;95.2%</text>
+      <rect x="315" y="60" width="170" height="24" rx="6" class="rankbox"></rect>
+      <text x="325" y="77" font-size="11" class="lbl">#2&#8194; " the"&#8194;&#8194;&#8194;&#8194;&#8194;&#8194;&#8194;&#8194;1.1%</text>
+      <rect x="315" y="88" width="170" height="24" rx="6" class="rankbox"></rect>
+      <text x="325" y="105" font-size="11" class="lbl">#3&#8194; " a"&#8194;&#8194;&#8194;&#8194;&#8194;&#8194;&#8194;&#8194;&#8194;0.6%</text>
+      <rect x="315" y="116" width="170" height="24" rx="6" class="rankbox"></rect>
+      <text x="325" y="133" font-size="11" class="lbl">&#8942;</text>
+      <text x="315" y="160" font-size="10.5" class="lbl">&#8230;all the way down to token #50,257</text>
+    </svg>
+    <figcaption>Percentages are illustrative roundings of the real scoreboard shape &mdash; GPT-2 is genuinely this confident that "Paris" follows this sentence.</figcaption>
+  </div>
+
+  <h2>Step two: picking one, and looping ("decode")</h2>
+  <p>
+    Now something has to turn that scoreboard into an actual choice. The simplest
+    rule &mdash; called <strong>greedy decoding</strong> &mdash; just always takes the #1 ranked
+    token. That's what our example does, which is why the answer comes out as
+    <strong>" Paris"</strong> every single time you ask it. Chat assistants usually
+    use a slightly looser rule instead, controlled by a setting called
+    <strong>temperature</strong>: turn it up, and the model will occasionally pick
+    a lower-ranked-but-still-reasonable word instead of always the top one, which
+    is why the same chatbot can phrase things a little differently each time you
+    ask.
+  </p>
+
+  <p>
+    Whichever token gets picked is <strong>appended to the end of the sentence</strong>,
+    and the whole thing runs again &mdash; except this time, the model only has to process
+    the one new token (it remembers everything about the tokens before it; more on
+    how in the next chapter). This repeat-one-token-at-a-time phase is called
+    <strong>decode</strong>, and it's why watching a chatbot "type" is not a visual
+    effect &mdash; it's genuinely producing one token, then the next, then the next.
+  </p>
+
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      It's a bit like predictive text on your phone keyboard, if predictive text
+      were extraordinarily good: it suggests the most likely next word, you (or in
+      this case, an automatic rule) tap it, and then it suggests the word after
+      that, based on everything typed so far including the word you just accepted.
+      Do that enough times in a row and full sentences emerge &mdash; one small, confident
+      guess at a time.
+    </p>
+  </div>
+
+  <p>For our sentence, the real loop plays out like this:</p>
+  <div class="tokrow">
+    <div class="tok"><span class="id">6342</span><span class="piece">" Paris"</span></div>
+    <div class="tok"><span class="id">13</span><span class="piece">"."</span></div>
+    <div class="tok" style="opacity:0.55;"><span class="id">&mdash;</span><span class="piece">stop</span></div>
+  </div>
+  <p>
+    Two tokens, and then the model produces a special <strong>end-of-sequence</strong>
+    token telling the engine "I'm done" &mdash; which is how it knows to stop instead of
+    rambling on forever.
+  </p>
+
+  <div class="example">
+    <span class="tag">A subtlety worth knowing</span>
+    <p style="margin:0;">
+      Notice we asked GPT-2 a <em>statement to finish</em> ("The capital city of
+      France is&hellip;"), not a question with a question mark. That's deliberate:
+      plain GPT-2 is a <strong>base model</strong> from 2019 &mdash; a pure autocomplete
+      engine with no idea it's supposed to be having a conversation. It was only
+      ever trained to guess "what word comes next," so it does best when you hand
+      it something to finish, not something to answer. That's genuinely
+      old technology at this point. So how does a modern assistant take an actual
+      question and hold a conversation, using this exact same next-token machinery?
+      That's the rest of this chapter.
+    </p>
+  </div>
+
+  <h2>How a question becomes something a completion engine can finish</h2>
+  <p>
+    Here's the part that surprises people: ChatGPT, Claude, Llama, Gemini &mdash;
+    every modern chat assistant &mdash; is still, underneath, running the exact same
+    loop you just watched. Guess one token. Append it. Repeat. Nothing about that
+    mechanism changed. What changed is <strong>what actually gets fed in before
+    the loop starts.</strong>
+  </p>
+  <p>
+    Before your question ever reaches the model, the inference engine wraps it in
+    extra text made of special <strong>marker tokens</strong> &mdash; reserved entries in
+    the vocabulary from Chapter 1 that never appear in ordinary writing, set aside
+    specifically to mark "here's where the user's turn starts," "here's where it
+    ends," "here's where the assistant should start replying." This wrapped version
+    is what actually gets tokenized and fed to the model. Here is the real template
+    this project uses for each modern, chat-tuned model it supports, with our
+    question dropped in:
+  </p>
+
+  <div class="template-label">Llama 3.2 &mdash; Meta, 2024 (RoPE + GQA, see the bonus chapter)</div>
+  <div class="template-block"><span class="lit">&lt;|begin_of_text|&gt;&lt;|start_header_id|&gt;user&lt;|end_header_id|&gt;</span>
+
+<span class="fill">What is the capital of France?</span><span class="lit">&lt;|eot_id|&gt;&lt;|start_header_id|&gt;assistant&lt;|end_header_id|&gt;</span>
+</div>
+
+  <div class="template-label">Falcon-7B-Instruct &mdash; TII, 2023 (MQA + RoPE)</div>
+  <div class="template-block"><span class="lit">User:</span> <span class="fill">What is the capital of France?</span>
+<span class="lit">Assistant:</span></div>
+
+  <div class="template-label">Granite &mdash; IBM, 2024 (GQA + RoPE, some releases add MoE)</div>
+  <div class="template-block"><span class="lit">&lt;|start_of_role|&gt;system&lt;|end_of_role|&gt;</span>You are a helpful assistant.<span class="lit">&lt;|end_of_text|&gt;
+&lt;|start_of_role|&gt;user&lt;|end_of_role|&gt;</span><span class="fill">What is the capital of France?</span><span class="lit">&lt;|end_of_text|&gt;
+&lt;|start_of_role|&gt;assistant&lt;|end_of_role|&gt;</span></div>
+
+  <p>
+    Once wrapped like this, "predict the next token" and "write the assistant's
+    reply" become the same task &mdash; because during a second training phase called
+    <strong>instruction tuning</strong> (on top of the original next-word pretraining),
+    the model was shown enormous numbers of examples in exactly this wrapped shape,
+    each one followed by a helpful reply. It learned that whenever this pattern of
+    marker tokens shows up, a helpful, conversational answer is what should come
+    next &mdash; the same next-token guessing from earlier in this chapter, just aimed
+    at a different learned pattern.
+  </p>
+
+  <div class="analogy">
+    <span class="tag">Analogy</span>
+    <p style="margin:0;">
+      It's like the difference between handing someone a half-written sentence
+      and handing them a filled-in customer-support ticket with clearly labeled
+      "Customer question" and "Agent response" fields. Both are just text to fill
+      in. But the second one, because of its familiar shape, makes it obvious
+      <em>what kind of thing</em> should go in the blank &mdash; and a support agent
+      who has filled in thousands of those tickets will complete it in ticket-reply
+      style without needing to be told to. The marker tokens are the labeled fields;
+      instruction tuning is the agent's experience with that exact shape.
+    </p>
+  </div>
+
+  <div class="example">
+    <span class="tag">Why GPT-2 still opened this chapter</span>
+    <p style="margin:0;">
+      GPT-2 has no chat template and was never instruction-tuned, which is exactly
+      why it made the clearest first example: there's no wrapping step to explain
+      before you can see the raw prefill/decode loop. Every modern assistant does
+      that same raw loop <em>plus</em> the wrapping and fine-tuning above &mdash; it's an
+      addition on top of Chapter 1&ndash;4's mechanics, not a replacement for them.
+    </p>
+  </div>
+
+  <div class="codepath">
+    <span class="tag">Under the hood</span>
+    The prefill/decode loop and greedy/temperature choice are implemented in
+    <code>generateResponse()</code> in <code>cmd/ask/main.go</code>, calling
+    <code>model.ForwardWithCache(...)</code> from <code>purego/tensor/model.go</code>
+    once for prefill, then once per generated token. Sampling helpers live in
+    <code>purego/tensor/sampling.go</code> and <code>nanovllm/sampling_params.go</code>.
+    The exact chat templates shown above are copied verbatim from
+    <code>formatPrompt()</code> in that same <code>cmd/ask/main.go</code> file.
+  </div>
+
+  <nav class="pager">
+    <a class="prev" href="04-hidden-layers.html"><span class="dir">&larr; Back</span>How understanding accumulates</a>
+    <a class="next" href="06-kv-cache.html"><span class="dir">Next</span>The KV cache &rarr;</a>
+  </nav>
+</main>
+</body>
+</html>
